@@ -357,7 +357,7 @@ namespace dimg
 		out += buf;
 	}
 
-	static void hex_into(std::string& out, const u8* data, usz len)
+	[[maybe_unused]] static void hex_into(std::string& out, const u8* data, usz len)
 	{
 		for (usz i = 0; i < len; i++)
 		{
@@ -860,7 +860,7 @@ namespace dimg
 		return s;
 	}
 
-	static std::string read_text_trimmed(const std::string& path)
+	[[maybe_unused]] static std::string read_text_trimmed(const std::string& path)
 	{
 		std::vector<u8> b;
 		if (!read_file_bytes(path, b))
@@ -871,7 +871,7 @@ namespace dimg
 	}
 
 	// ---------------------------------------------------------------- 设备密钥
-	static std::string machine_key_path()
+	[[maybe_unused]] static std::string machine_key_path()
 	{
 		// 正式 Android 构建不会写这个文件（Keystore 的私钥导不出来）；只有离线自测用
 		return config_dir() + "machine.key.pem";
@@ -1125,7 +1125,7 @@ namespace dimg
 	}
 
 	// ---------------------------------------------------------------- 输出 / 报告
-	static std::string exe_dir()
+	[[maybe_unused]] static std::string exe_dir()
 	{
 		return config_dir();
 	}

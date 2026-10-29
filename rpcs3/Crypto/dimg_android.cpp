@@ -205,7 +205,10 @@ namespace dimg_android
 			return;
 		}
 
-		if (scoped_env env)
+		// 注意：`if (scoped_env env)` 是非法写法（声明式条件必须有初始化器），
+		// 得先声明再判空 —— CI 第一次构建就是死在这一行。
+		scoped_env env;
+		if (env)
 		{
 			env.get()->DeleteGlobalRef(g_class);
 		}
