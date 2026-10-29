@@ -5,8 +5,10 @@
 ```
 master = 上游镜像 + 新增文件 + tools/custom/* + workflow      ← 唯一需要维护的分支
          · Sync fork 随时点，零冲突（我们从不改上游文件）
-         · 出包：Actions → Build ARMSX3 (custom Android) → Run workflow
+         · 出包：Actions → Build ARMSX3 (custom Android) → Run workflow（**手动**）
          · CI 在 checkout 之后自己打那 12 处钩子
+         · 这个 workflow **故意没有任何 push 触发**：否则 Sync fork / 合上游
+           产生的提交都会烧一次 1~2 小时的构建
 ```
 
 `custom-dimg-android` 只是当初做移植时的工作分支（内容 = master + 已打好的钩子），

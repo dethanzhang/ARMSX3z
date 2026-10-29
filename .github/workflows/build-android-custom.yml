@@ -24,8 +24,8 @@
 #        -dname "CN=ARMSX3 custom, O=dethanzhang" -storepass '<密码>' -keypass '<密码>'
 #
 # 用法：
-#   1. 推到自己的 fork（分支 custom-build 会自动跑，或在默认分支上手动 Run workflow）
-#   2. Actions →「Build ARMSX3 (custom Android)」→ Run workflow
+#   1. 代码在 master 上（= 上游镜像 + 新增文件；钩子由 CI 在构建时打）
+#   2. Actions →「Build ARMSX3 (custom Android)」→ Run workflow（**手动**，本 workflow 没有 push 触发）
 #   3. 首次约 60~120 分钟（LLVM 要从源码编）
 # =============================================================================
 
@@ -36,16 +36,17 @@ defaults:
     shell: bash
 
 on:
+  # **只有手动触发**：不加任何 push 触发。
+  #
+  # 理由：这个仓库跟着上游跑，`Sync fork` / 合上游都会在 master 上产生提交（即 push 事件），
+  # 一次构建 1~2 小时；若挂了 push 触发，光是保持同步就会不停烧 runner。
+  # 所以要出包时自己点一次：Actions → Build ARMSX3 (custom Android) → Run workflow。
   workflow_dispatch:
     inputs:
       note:
         description: '本次构建备注（只写进 job summary，可留空）'
         required: false
         default: ''
-  push:
-    # 只在专用分支上触发；别写成 master，否则每次改 workflow 都会跑一遍
-    branches:
-      - custom-build
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
