@@ -193,6 +193,15 @@ jobs:
           ls -l android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/
 
       # 定制版的授权页 + Keystore 桥都在这里编进去；缺文件就直接 fail，别发个半成品
+      # 编完立刻显式存一次：actions/cache 的自动保存在「job 失败」时不一定落盘，
+      # 而后面（APK/Kotlin）出错时我们**非常想**留住这个 core —— 下一次就能几分钟出结果。
+      - name: Save core cache
+        if: steps.corecache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/libarmsx3-core.so
+          key: armsx3-core-${{ steps.corekey.outputs.key }}
+
       - name: Core cache status
         run: |
           if [ "${{ steps.corecache.outputs.cache-hit }}" = "true" ]; then
