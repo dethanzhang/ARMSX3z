@@ -388,6 +388,17 @@ GATE_FN_PAYLOAD = """        /**
 
 """
 
+# Discord Social SDK：专有、不随仓库分发（上游 README 自己说的），但胶水层的 CMakeLists
+# 对 aarch64 无条件 add_library(armsx2_discord) + IMPORTED libdiscord_partner_sdk.so，
+# 干净克隆里没这个 .so → ninja 报 "missing and no known rule to make it"。
+# 给那个 if 加一个 EXISTS 条件即可；Kotlin 侧的 DiscordNative 本来就 catch 了 loadLibrary 失败。
+# 注意 aarch64 这个 if 在文件里出现两次（第一次是 libadrenotools），锚点必须带下一行才唯一。
+DISCORD_OLD = """if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+    add_library(discord_partner_sdk SHARED IMPORTED)"""
+
+DISCORD_NEW = """if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/discord_sdk/arm64-v8a/libdiscord_partner_sdk.so")
+    add_library(discord_partner_sdk SHARED IMPORTED)"""
+
 # 上游两处「只有名字/大小写不对」的 include，都用 tools/custom/shim 兜住：
 #   * FrameGen/FrameGenTypes.h  →  "Config.h"（移植残留，见 shim/Config.h）
 #   * VK/vkutils/sync.cpp       →  "Emu/system.h"（真实文件是 Emu/System.h，见 shim/Emu/system.h）
@@ -444,6 +455,11 @@ HOOKS: list[Hook] = [
         _insert_after(t, GATE_CALL_ANCHOR, GATE_CALL_PAYLOAD, "MainActivityRuntime.kt：闸门调用"), GATE_FN_ANCHOR,
         GATE_FN_PAYLOAD, "MainActivityRuntime.kt：闸门实现"),
          "开游戏前的授权闸门"),
+    Hook("discord-sdk", "android/armsx3-ui/app/src/main/cpp/CMakeLists.txt",
+         "libdiscord_partner_sdk.so\")",
+         lambda t: _replace_once(t, DISCORD_OLD, DISCORD_NEW,
+                                 "app/src/main/cpp/CMakeLists.txt：Discord SDK 的 aarch64 条件"),
+         "没有 Discord Social SDK（专有、不随仓库分发）时跳过 armsx2_discord target"),
     Hook("framegen-config", "rpcs3/Emu/CMakeLists.txt", "tools/custom/shim",
          lambda t: t.rstrip("\n") + "\n" + FRAMEGEN_CONFIG_PAYLOAD,
          "FrameGen 残留的 #include \"Config.h\" → 空替身（否则核心编不过）"),
