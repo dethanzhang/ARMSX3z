@@ -1,0 +1,230 @@
+# =============================================================================
+# ARMSX3 定制版（Android / arm64）—— 整盘加密镜像 + 离线激活
+# -----------------------------------------------------------------------------
+# 与上游 ARMSX3 的差别（见 rpcs3/Crypto/dimg*.cpp、android/src/dimg_jni.cpp）：
+#   * 平台档 tag[9] = 2：只认「Android 档」的 locked ISO，Windows/Steam Deck 的盘一律 E8
+#   * 设备密钥在 AndroidKeyStore（StrongBox 优先 / TEE 兜底），私钥不可导出、卸载即销毁
+#   * 解锁入口在应用内「授权（定制版）」页：生成申请码 → 导入 license.bin / 粘授权码
+#
+# 产物：
+#   * ARMSX3-<ver>-custom-github-release.apk
+#     · 配了签名 secret（见下）→ 用固定 release 密钥签，**正式发放必须这样**
+#     · 没配 → debug 签名（runner 每次现生成一把新密钥 ⇒ 每个包签名都不同）
+#   * *-src.tar.gz（GPLv2 合规：二进制必须能拿到对应源码）
+#   * *-SUBMODULES.txt / *-COMMIT.txt
+#
+# ⚠️ 为什么签名密钥必须长期固定：AndroidKeyStore 里的设备密钥与应用身份绑定，换签名只能
+#    先卸载再装 ⇒ Keystore 私钥被销毁 ⇒ 已发出的 license 全部 E6（要重签）。所以正式包
+#    必须始终用同一把证书签。四个 repo secret：
+#      DIMG_KEYSTORE_B64    = base64 -i armsx3-release.jks | tr -d '\n'
+#      DIMG_STORE_PASSWORD / DIMG_KEY_ALIAS / DIMG_KEY_PASSWORD
+#    生成（一次性，离线保存！）：
+#      keytool -genkeypair -v -keystore armsx3-release.jks -alias armsx3 \
+#        -keyalg RSA -keysize 4096 -validity 36500 \
+#        -dname "CN=ARMSX3 custom, O=dethanzhang" -storepass '<密码>' -keypass '<密码>'
+#
+# 用法：
+#   1. 推到自己的 fork（分支 custom-build 会自动跑，或在默认分支上手动 Run workflow）
+#   2. Actions →「Build ARMSX3 (custom Android)」→ Run workflow
+#   3. 首次约 60~120 分钟（LLVM 要从源码编）
+# =============================================================================
+
+name: Build ARMSX3 (custom Android)
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: '本次构建备注（只写进 job summary，可留空）'
+        required: false
+        default: ''
+  push:
+    # 只在专用分支上触发；别写成 master，否则每次改 workflow 都会跑一遍
+    branches:
+      - custom-build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  NDK_VERSION: 29.0.14206865
+  CMAKE_VERSION: 3.30.5
+  ANDROID_API: 33
+  BUILD_DIR: ${{ github.workspace }}/build-android
+
+jobs:
+  Android_Build:
+    name: ARMSX3 custom (arm64, APK)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # README 里点名的两个「不是 submodule 的第三方」
+      - name: Fetch non-submodule third parties
+        run: |
+          git clone --depth 1 https://github.com/SnowflakePowered/librashader 3rdparty/librashader
+          git clone --depth 1 https://github.com/bylaws/libadrenotools \
+            android/armsx3-ui/app/src/main/cpp/libadrenotools
+
+      # 定制钩子（12 处对上游文件的小改动）：幂等
+      #   * 从 master（纯上游镜像 + 新增文件）构建 → 这里把它们打上
+      #   * 从定制分支构建 → 提交里已经有了，这一步全跳过
+      # 上游重构了被钩的代码 → 这里直接报错并指出是哪条锚点，绝不静默出包
+      - name: Apply custom hooks
+        run: |
+          python3 tools/custom/apply_custom_hooks.py --check || true
+          python3 tools/custom/apply_custom_hooks.py
+          python3 tools/custom/apply_custom_hooks.py --check
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install NDK + cmake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION" "platforms;android-$ANDROID_API" > /dev/null
+          echo "NDK: $ANDROID_HOME/ndk/$NDK_VERSION"
+          ls "$ANDROID_HOME/ndk/$NDK_VERSION" | head
+
+      # 固定签名密钥（可选但正式发放必须）：没有就用 debug 签名，并在 summary 里报警
+      - name: Prepare signing key
+        id: signing
+        env:
+          KS_B64: ${{ secrets.DIMG_KEYSTORE_B64 }}
+          KS_STORE_PW: ${{ secrets.DIMG_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.DIMG_KEY_ALIAS }}
+          KS_KEY_PW: ${{ secrets.DIMG_KEY_PASSWORD }}
+        run: |
+          if [ -z "${KS_B64:-}" ]; then
+            echo "signing=debug" >> "$GITHUB_OUTPUT"
+            echo "::warning::没配 DIMG_KEYSTORE_B64，本次用 debug 签名；换包必须卸载，玩家 license 会失效"
+            exit 0
+          fi
+          printf '%s' "$KS_B64" | base64 -d > android/armsx3-ui/armsx3-release.jks
+          {
+            echo "storeFile=armsx3-release.jks"
+            echo "storePassword=${KS_STORE_PW}"
+            echo "keyAlias=${KS_ALIAS}"
+            echo "keyPassword=${KS_KEY_PW}"
+          } > android/armsx3-ui/keystore.properties
+          chmod 600 android/armsx3-ui/armsx3-release.jks android/armsx3-ui/keystore.properties
+          echo "signing=upload" >> "$GITHUB_OUTPUT"
+          keytool -list -v -keystore android/armsx3-ui/armsx3-release.jks \
+            -storepass "$KS_STORE_PW" -alias "$KS_ALIAS" 2>/dev/null | grep -E 'Alias|SHA256' || true
+
+      - name: Configure core
+        run: |
+          chmod +x android/configure.sh android/build-variants.sh
+          android/configure.sh
+
+      # 核心很大（未 strip 约 1.3GB），-j 别开太大，runner 内存会先爆
+      - name: Build core (libarmsx3-core.so)
+        run: |
+          "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin/cmake" --build "$BUILD_DIR" \
+            --target rpcsx-android -j"$(nproc)"
+
+      - name: Strip + place core into jniLibs
+        run: |
+          STRIP="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          SRC="$BUILD_DIR/android/libarmsx3-core.so"
+          ls -l "$SRC"
+          "$STRIP" --strip-unneeded "$SRC"
+          mkdir -p android/armsx3-ui/app/src/main/jniLibs/arm64-v8a
+          cp "$SRC" android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/
+          ls -l android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/
+
+      # 定制版的授权页 + Keystore 桥都在这里编进去；缺文件就直接 fail，别发个半成品
+      - name: Sanity check custom pieces
+        run: |
+          test -f rpcs3/Crypto/dimg.cpp
+          test -f rpcs3/Crypto/dimg_android.cpp
+          test -f android/src/dimg_jni.cpp
+          grep -q "PROFILE_PLATFORM = 2" rpcs3/Crypto/dimg.cpp
+          grep -q "_rpcsx_dimgProbe" android/src/dimg_jni.cpp
+          grep -q "installDimgBridge" android/armsx3-ui/app/src/main/java/net/rpcsx/RPCSX.kt
+          # 这两条最容易在 sync upstream 之后被「悄悄弄丢」：ISO 打开点与编译单元
+          grep -q "dimg::open_maybe_locked" rpcs3/Loader/ISO.cpp
+          grep -q "Crypto/dimg.cpp" rpcs3/Emu/CMakeLists.txt
+
+      - name: Build APK (github flavor)
+        working-directory: android/armsx3-ui
+        run: |
+          chmod +x gradlew
+          FLAGS=""
+          if [ "${{ steps.signing.outputs.signing }}" = "upload" ]; then FLAGS="-Parmsx3.uploadSigning"; fi
+          ./gradlew --no-daemon :app:assembleGithubRelease $FLAGS
+
+      - name: Collect artifacts
+        run: |
+          # 签名材料绝不进 artifact
+          rm -f android/armsx3-ui/keystore.properties android/armsx3-ui/armsx3-release.jks
+          mkdir -p artifacts
+          find android/armsx3-ui/app/build/outputs/apk -name '*.apk' -print -exec cp {} artifacts/ \;
+          APK=$(ls artifacts/*.apk 2>/dev/null | head -1 || true)
+          if [ -n "$APK" ]; then
+            APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
+            [ -n "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs "$APK" || true
+          fi
+          cd artifacts && ls -l && sha256sum ./* > SHA256SUMS.txt
+
+      # GPLv2：分发二进制必须能提供对应源码（含 submodule 指针清单）
+      - name: Package corresponding source (GPLv2)
+        run: |
+          OUT="${{ github.workspace }}/artifacts"
+          APK=$(ls "$OUT"/*.apk 2>/dev/null | head -1 || true)
+          BASE="$(basename "${APK:-ARMSX3-custom}" .apk)-src"
+          git archive --format=tar.gz --prefix="${BASE}/" -o "${OUT}/${BASE}.tar.gz" HEAD
+          git submodule status > "${OUT}/${BASE}-SUBMODULES.txt"
+          git log -1 --format='commit=%H%nsubject=%s%ndate=%ad' > "${OUT}/${BASE}-COMMIT.txt"
+
+      - name: Write SHA256SUMS (final)
+        run: |
+          cd artifacts && sha256sum ./* > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### ARMSX3 定制版（Android）构建"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- 备注: ${{ github.event.inputs.note }}"
+            echo "- 平台档: tag[9] = 2（Android）"
+            echo "- 签名: ${{ steps.signing.outputs.signing }}"
+            echo ""
+            if [ "${{ steps.signing.outputs.signing }}" = "debug" ]; then
+              echo "> ⚠️ debug 签名：只适合自测。正式发放请配 DIMG_KEYSTORE_B64 等四个 secret，"
+              echo "> 否则每次构建签名都不同 ⇒ 玩家换包必须卸载 ⇒ license 全部作废。"
+              echo ""
+            fi
+            echo '```'
+            cat artifacts/SHA256SUMS.txt 2>/dev/null || echo '(无产物)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARMSX3-Android-custom-${{ github.run_number }}
+          path: artifacts
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
