@@ -118,6 +118,13 @@ jobs:
             echo "::warning::没配 DIMG_KEYSTORE_B64，本次用 debug 签名；换包必须卸载，玩家 license 会失效"
             exit 0
           fi
+          # 配了密钥就必须四项齐全，别等 Gradle 报一句莫名其妙的 NPE
+          for v in KS_STORE_PW KS_ALIAS KS_KEY_PW; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::DIMG_KEYSTORE_B64 给了，但 $v（对应 secret）是空的；4 个 secret 必须一起配"
+              exit 1
+            fi
+          done
           printf '%s' "$KS_B64" | base64 -d > android/armsx3-ui/armsx3-release.jks
           {
             echo "storeFile=armsx3-release.jks"

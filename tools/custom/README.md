@@ -1,5 +1,20 @@
 # tools/custom —— 定制版补丁（让 master 保持「上游镜像」，Sync fork 零冲突）
 
+## 分支模型（只用一个分支就够）
+
+```
+master = 上游镜像 + 新增文件 + tools/custom/* + workflow      ← 唯一需要维护的分支
+         · Sync fork 随时点，零冲突（我们从不改上游文件）
+         · 出包：Actions → Build ARMSX3 (custom Android) → Run workflow
+         · CI 在 checkout 之后自己打那 12 处钩子
+```
+
+`custom-dimg-android` 只是当初做移植时的工作分支（内容 = master + 已打好的钩子），
+留着可以本地对照，**不再需要**：任何改动都直接做在 master 上，本地验证时跑一次脚本即可。
+
+> 注意：从 master 本地编译前必须 `python3 tools/custom/apply_custom_hooks.py`
+> （否则得到的是没有授权的原版）；CI 自动做这一步。
+
 ## 为什么这么做
 
 定制版对上游代码的改动只有两类：
