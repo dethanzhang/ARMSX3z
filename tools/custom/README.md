@@ -94,6 +94,22 @@ done
 git worktree remove --force /tmp/ax3-verify
 ```
 
+## 附带的自检
+
+```bash
+python3 tools/custom/check_include_case.py
+```
+扫全仓 `#include "..."`，只报「精确大小写不存在、但忽略大小写存在」的那种 —— 也就是
+**macOS 上能编、Linux CI 上 fatal error** 的坑（上游作者在 macOS 开发，APFS 大小写不敏感）。
+CI 的 `Sanity check custom pieces` 里也会跑它。
+
+目前 `tools/custom/shim/` 里有两个只为这种事存在的转发头：
+
+| 文件 | 挡的是 |
+|---|---|
+| `Config.h` | `RSX/VK/FrameGen/FrameGenTypes.h` 里移植残留的 `#include "Config.h"`（本仓库没有这个头） |
+| `Emu/system.h` | `RSX/VK/vkutils/sync.cpp` 里写成小写的 `#include "Emu/system.h"`（真实文件是 `Emu/System.h`） |
+
 ## 钩子清单（13 条）
 
 | name | 文件 | 作用 |

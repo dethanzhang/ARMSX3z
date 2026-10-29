@@ -224,6 +224,9 @@ jobs:
           grep -q "Crypto/dimg.cpp" rpcs3/Emu/CMakeLists.txt
           # 核心产物必须在（缓存坏了/漏拷时别打出一个没有 emulator 的包）
           test -s android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/libarmsx3-core.so
+          # 只差大小写的 #include（macOS 能编、Linux 编不过）——上游两处都已用 shim 兜住，
+          # 这里再扫一遍，防止以后 sync 又带进来一个
+          python3 tools/custom/check_include_case.py
 
       - name: Build APK (github flavor)
         working-directory: android/armsx3-ui

@@ -388,7 +388,9 @@ GATE_FN_PAYLOAD = """        /**
 
 """
 
-# FrameGen 的残留 include：见 tools/custom/shim/Config.h 的说明
+# 上游两处「只有名字/大小写不对」的 include，都用 tools/custom/shim 兜住：
+#   * FrameGen/FrameGenTypes.h  →  "Config.h"（移植残留，见 shim/Config.h）
+#   * VK/vkutils/sync.cpp       →  "Emu/system.h"（真实文件是 Emu/System.h，见 shim/Emu/system.h）
 FRAMEGEN_CONFIG_PAYLOAD = """
 # 定制版：上游 RSX/VK/FrameGen/FrameGenTypes.h 里 `#include "Config.h"` 是移植时的残留
 # （PCSX2 的 Config.h；本仓库已把那些设置改接到 g_cfg）。给一个空头，且放在 include
@@ -461,6 +463,7 @@ REQUIRED_NEW_FILES = [
     KT + "com/armsx2/dimg/DimgKeystore.kt",
     KT + "com/armsx2/ui/license/LicenseScreen.kt",
     "tools/custom/shim/Config.h",
+    "tools/custom/shim/Emu/system.h",
 ]
 
 
