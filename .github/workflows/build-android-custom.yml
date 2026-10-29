@@ -81,7 +81,7 @@ jobs:
           git clone --depth 1 https://github.com/bylaws/libadrenotools \
             android/armsx3-ui/app/src/main/cpp/libadrenotools
 
-      # 定制钩子（12 处对上游文件的小改动）：幂等
+      # 定制钩子（13 处对上游文件的小改动）：幂等
       #   * 从 master（纯上游镜像 + 新增文件）构建 → 这里把它们打上
       #   * 从定制分支构建 → 提交里已经有了，这一步全跳过
       # 上游重构了被钩的代码 → 这里直接报错并指出是哪条锚点，绝不静默出包
@@ -143,9 +143,18 @@ jobs:
       - name: Core cache key
         id: corekey
         run: |
-          KEY=$(git ls-tree -r --full-tree HEAD -- rpcs3 android/src android/CMakeLists.txt \
-                  CMakeLists.txt 3rdparty android/armsx3-ui/app/src/main/cpp \
-                | sha256sum | cut -c1-16)
+          # 关键：钩子脚本 + shim 的内容也要进 key。钩子会在构建时改 rpcs3/ 里的文件
+          # （比如给 rpcs3_emu 加一个 include 目录），如果 key 只算 git 树，
+          # 改了钩子却命中旧 core，就会打出一个「C++ 变了但 core 还是旧的」包。
+          KEY=$(
+            {
+              git ls-tree -r --full-tree HEAD -- rpcs3 android/src android/CMakeLists.txt \
+                CMakeLists.txt 3rdparty android/armsx3-ui/app/src/main/cpp
+              echo '--- hooks ---'
+              cat tools/custom/apply_custom_hooks.py
+              find tools/custom/shim -type f -print -exec cat {} \; 2>/dev/null
+            } | sha256sum | cut -c1-16
+          )
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
           echo "core key = $KEY"
 

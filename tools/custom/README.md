@@ -6,7 +6,7 @@
 master = 上游镜像 + 新增文件 + tools/custom/* + workflow      ← 唯一需要维护的分支
          · Sync fork 随时点，零冲突（我们从不改上游文件）
          · 出包：Actions → Build ARMSX3 (custom Android) → Run workflow（**手动**）
-         · CI 在 checkout 之后自己打那 12 处钩子
+         · CI 在 checkout 之后自己打那 13 处钩子
          · 这个 workflow **故意没有任何 push 触发**：否则 Sync fork / 合上游
            产生的提交都会烧一次 1~2 小时的构建
 ```
@@ -42,7 +42,7 @@ CI              = checkout 任意分支 → apply_custom_hooks.py → 编译 →
 ```bash
 python3 tools/custom/apply_custom_hooks.py           # 打钩子（已打过的跳过）
 python3 tools/custom/apply_custom_hooks.py --check   # 只检查；缺任何一条就非零退出
-python3 tools/custom/apply_custom_hooks.py --list    # 列出 12 条钩子及其作用
+python3 tools/custom/apply_custom_hooks.py --list    # 列出 13 条钩子及其作用
 ```
 
 CI 里（`.github/workflows/build-android-custom.yml`）在 checkout 之后立刻调用它，所以：
@@ -94,7 +94,7 @@ done
 git worktree remove --force /tmp/ax3-verify
 ```
 
-## 钩子清单（12 条）
+## 钩子清单（13 条）
 
 | name | 文件 | 作用 |
 |---|---|---|
@@ -109,4 +109,5 @@ git worktree remove --force /tmp/ax3-verify
 | `drawer-kt` | `navigation/NavigationDrawer.kt` | 抽屉入口 + 高亮判定 |
 | `apptab-kt` | `ui/settings/AppTab.kt` | 设置页入口行（含「已激活/未激活」） |
 | `gate-kt` | `runtime/MainActivityRuntime.kt` | 开游戏前的授权闸门 `gateDimg()` |
+| `framegen-config` | `rpcs3/Emu/CMakeLists.txt` | 把 `tools/custom/shim`（空 `Config.h`）以最低优先级加进 `rpcs3_emu`：上游 FrameGen 头里留了 PCSX2 的 `#include "Config.h"`，本仓库没有这个头 |
 | `proguard` | `app/proguard-rules.pro` | `-keep class com.armsx2.dimg.DimgKeystore` |

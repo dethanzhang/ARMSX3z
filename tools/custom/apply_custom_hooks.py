@@ -388,6 +388,14 @@ GATE_FN_PAYLOAD = """        /**
 
 """
 
+# FrameGen 的残留 include：见 tools/custom/shim/Config.h 的说明
+FRAMEGEN_CONFIG_PAYLOAD = """
+# 定制版：上游 RSX/VK/FrameGen/FrameGenTypes.h 里 `#include "Config.h"` 是移植时的残留
+# （PCSX2 的 Config.h；本仓库已把那些设置改接到 g_cfg）。给一个空头，且放在 include
+# 顺序最后，避免改上游文件。说明见 tools/custom/shim/Config.h。
+target_include_directories(rpcs3_emu PRIVATE "${CMAKE_SOURCE_DIR}/tools/custom/shim")
+"""
+
 PROGUARD_ANCHOR = """-keep class net.rpcsx.RPCSX { *; }
 """
 
@@ -434,6 +442,9 @@ HOOKS: list[Hook] = [
         _insert_after(t, GATE_CALL_ANCHOR, GATE_CALL_PAYLOAD, "MainActivityRuntime.kt：闸门调用"), GATE_FN_ANCHOR,
         GATE_FN_PAYLOAD, "MainActivityRuntime.kt：闸门实现"),
          "开游戏前的授权闸门"),
+    Hook("framegen-config", "rpcs3/Emu/CMakeLists.txt", "tools/custom/shim",
+         lambda t: t.rstrip("\n") + "\n" + FRAMEGEN_CONFIG_PAYLOAD,
+         "FrameGen 残留的 #include \"Config.h\" → 空替身（否则核心编不过）"),
     Hook("proguard", "android/armsx3-ui/app/proguard-rules.pro", "com.armsx2.dimg.DimgKeystore", lambda t: _insert_after(t, PROGUARD_ANCHOR, PROGUARD_PAYLOAD, "proguard：keep DimgKeystore"),
          "R8 不许删 Keystore 桥的目标类"),
 ]
@@ -449,6 +460,7 @@ REQUIRED_NEW_FILES = [
     KT + "com/armsx2/dimg/Dimg.kt",
     KT + "com/armsx2/dimg/DimgKeystore.kt",
     KT + "com/armsx2/ui/license/LicenseScreen.kt",
+    "tools/custom/shim/Config.h",
 ]
 
 
