@@ -75,11 +75,19 @@ jobs:
           submodules: recursive
 
       # README 里点名的两个「不是 submodule 的第三方」
+      #
+      # 必须 --recursive：libadrenotools 自带子模块 lib/linkernsbypass
+      # （它的 CMakeLists 直接 add_subdirectory(lib/linkernsbypass)），
+      # 浅克隆不带子模块的话，Gradle 配置 app/src/main/cpp 的 native 部分就会报
+      #   "lib/linkernsbypass does not contain a CMakeLists.txt"。
       - name: Fetch non-submodule third parties
         run: |
-          git clone --depth 1 https://github.com/SnowflakePowered/librashader 3rdparty/librashader
-          git clone --depth 1 https://github.com/bylaws/libadrenotools \
+          git clone --depth 1 --recursive https://github.com/SnowflakePowered/librashader 3rdparty/librashader
+          git clone --depth 1 --recursive https://github.com/bylaws/libadrenotools \
             android/armsx3-ui/app/src/main/cpp/libadrenotools
+          # 缺了就别往下走：省得 Gradle 在 configure 阶段才报一句难懂的话
+          test -f android/armsx3-ui/app/src/main/cpp/libadrenotools/lib/linkernsbypass/CMakeLists.txt
+          test -d 3rdparty/librashader/include
 
       # 定制钩子（13 处对上游文件的小改动）：幂等
       #   * 从 master（纯上游镜像 + 新增文件）构建 → 这里把它们打上
