@@ -388,6 +388,12 @@ GATE_FN_PAYLOAD = """        /**
 
 """
 
+# savers（XScreenSaver 移植）里唯一一处大小写错的 include：
+#   savers/skyrocket/shockwave.cpp 写 <gl/gl.h>，仓库里实际是 savers/compat/GL/gl.h
+# macOS 大小写不敏感能编，Linux 上 fatal error（第六次构建就死在这）。
+SAVERS_GL_OLD = "#include <gl/gl.h>"
+SAVERS_GL_NEW = "#include <GL/gl.h>"
+
 # Discord Social SDK：专有、不随仓库分发（上游 README 自己说的），但胶水层的 CMakeLists
 # 对 aarch64 无条件 add_library(armsx2_discord) + IMPORTED libdiscord_partner_sdk.so，
 # 干净克隆里没这个 .so → ninja 报 "missing and no known rule to make it"。
@@ -455,6 +461,11 @@ HOOKS: list[Hook] = [
         _insert_after(t, GATE_CALL_ANCHOR, GATE_CALL_PAYLOAD, "MainActivityRuntime.kt：闸门调用"), GATE_FN_ANCHOR,
         GATE_FN_PAYLOAD, "MainActivityRuntime.kt：闸门实现"),
          "开游戏前的授权闸门"),
+    Hook("savers-gl-case", "android/armsx3-ui/app/src/main/cpp/savers/skyrocket/shockwave.cpp",
+         "#include <GL/gl.h>",
+         lambda t: _replace_once(t, SAVERS_GL_OLD, SAVERS_GL_NEW,
+                                 "shockwave.cpp：<gl/gl.h> → <GL/gl.h>"),
+         "savers 里 <gl/gl.h> 的大小写（macOS 能编、Linux 报 file not found）"),
     Hook("discord-sdk", "android/armsx3-ui/app/src/main/cpp/CMakeLists.txt",
          "libdiscord_partner_sdk.so\")",
          lambda t: _replace_once(t, DISCORD_OLD, DISCORD_NEW,

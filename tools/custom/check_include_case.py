@@ -28,6 +28,12 @@ SKIP_PARTS = ("/.git/", "/3rdparty/", "/build-android/", "/.github/", "/node_mod
 INC_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 EXTS = (".cpp", ".h", ".hpp", ".c", ".cc", ".inl")
 
+# 由 NDK/bionic 或工具链提供的头：即使仓库里有同名不同大小写的文件，也以系统头为准
+NDK_HEADERS = {
+    "elf.h", "jni.h", "link.h", "dlfcn.h", "unistd.h", "pthread.h",
+    "android/log.h", "android/native_window.h", "GLES2/gl2.h", "GLES3/gl3.h", "EGL/egl.h",
+}
+
 # 我们自己的构建时 include 目录（apply_custom_hooks.py 会把它加进 rpcs3_emu）
 EXTRA_INCLUDE_DIRS = ("tools/custom/shim", "rpcs3")
 
@@ -93,6 +99,40 @@ def main() -> int:
             if a.fix_hints:
                 print(f"    建议: 在 tools/custom/shim/{os.path.dirname(inc) or '.'}/ 放一个转发头，"
                       f"内容 #include <{hits[0].removeprefix('rpcs3/')}>")
+
+    # ---- 尖括号形式：胶水层（app/src/main/cpp）的 savers 有自己的一套 include 根 ----
+    glue = "android/armsx3-ui/app/src/main/cpp"
+    glue_roots = [glue, glue + "/savers", glue + "/savers/compat", glue + "/savers/rslibs"]
+    glue_roots += [glue + "/savers/" + d for d in
+                   ("flux", "plasma", "solarwinds", "hyperspace", "lattice", "skyrocket")]
+    angle = re.compile(r'^\s*#\s*include\s+<([^>]+)>')
+
+    for f in files:
+        if not f.startswith(glue) or not f.endswith(EXTS):
+            continue
+        try:
+            text = (ROOT / f).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            m = angle.match(line)
+            if not m:
+                continue
+            inc = m.group(1)
+            if inc in NDK_HEADERS:
+                continue
+            if any(norm(r + "/" + inc) in exact for r in glue_roots) or norm(inc) in exact:
+                continue
+            hits = [p for p in exact if p.lower().endswith("/" + inc.lower())]
+            if not hits:
+                continue        # 标准头 / Windows-only / NDK 头，不归这里管
+            key = (inc, hits[0])
+            problems += 1
+            if key in seen:
+                continue
+            seen.add(key)
+            print(f'大小写不匹配（尖括号）：<{inc}>  ←  {f}')
+            print(f"    实际文件: {', '.join(hits)}")
 
     if problems:
         print(f"\n共 {problems} 处（{len(seen)} 个不同文件）。Linux 上会 fatal error。", file=sys.stderr)
