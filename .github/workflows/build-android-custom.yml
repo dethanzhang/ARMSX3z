@@ -138,18 +138,42 @@ jobs:
           keytool -list -v -keystore android/armsx3-ui/armsx3-release.jks \
             -storepass "$KS_STORE_PW" -alias "$KS_ALIAS" 2>/dev/null | grep -E 'Alias|SHA256' || true
 
+      # 核心缓存：key 只取「C++ 侧」的树哈希（rpcs3/、android/src/、CMake 与 3rdparty 指针），
+      # 所以只改 Kotlin/资源时不会重编 core（40 分钟 → 几分钟），改了 C++ 自然 miss。
+      - name: Core cache key
+        id: corekey
+        run: |
+          KEY=$(git ls-tree -r --full-tree HEAD -- rpcs3 android/src android/CMakeLists.txt \
+                  CMakeLists.txt 3rdparty android/armsx3-ui/app/src/main/cpp \
+                | sha256sum | cut -c1-16)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "core key = $KEY"
+
+      - name: Restore cached core
+        id: corecache
+        uses: actions/cache@v4
+        with:
+          path: android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/libarmsx3-core.so
+          # 只用精确 key：**故意不写 restore-keys**
+          # 前缀回退会拿回「C++ 已经改过、但 core 还是旧的」缓存 —— 那正好是
+          # 「能装但打不开加密盘」的包。宁可 miss 一次重编 40 分钟。
+          key: armsx3-core-${{ steps.corekey.outputs.key }}
+
       - name: Configure core
+        if: steps.corecache.outputs.cache-hit != 'true'
         run: |
           chmod +x android/configure.sh android/build-variants.sh
           android/configure.sh
 
       # 核心很大（未 strip 约 1.3GB），-j 别开太大，runner 内存会先爆
       - name: Build core (libarmsx3-core.so)
+        if: steps.corecache.outputs.cache-hit != 'true'
         run: |
           "$ANDROID_HOME/cmake/$CMAKE_VERSION/bin/cmake" --build "$BUILD_DIR" \
             --target rpcsx-android -j"$(nproc)"
 
       - name: Strip + place core into jniLibs
+        if: steps.corecache.outputs.cache-hit != 'true'
         run: |
           STRIP="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           SRC="$BUILD_DIR/android/libarmsx3-core.so"
@@ -160,6 +184,15 @@ jobs:
           ls -l android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/
 
       # 定制版的授权页 + Keystore 桥都在这里编进去；缺文件就直接 fail，别发个半成品
+      - name: Core cache status
+        run: |
+          if [ "${{ steps.corecache.outputs.cache-hit }}" = "true" ]; then
+            echo "core 命中缓存，跳过 configure/build/strip"
+          else
+            echo "core 未命中缓存：本次完整编译"
+          fi
+          ls -l android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/ || true
+
       - name: Sanity check custom pieces
         run: |
           test -f rpcs3/Crypto/dimg.cpp
@@ -171,6 +204,8 @@ jobs:
           # 这两条最容易在 sync upstream 之后被「悄悄弄丢」：ISO 打开点与编译单元
           grep -q "dimg::open_maybe_locked" rpcs3/Loader/ISO.cpp
           grep -q "Crypto/dimg.cpp" rpcs3/Emu/CMakeLists.txt
+          # 核心产物必须在（缓存坏了/漏拷时别打出一个没有 emulator 的包）
+          test -s android/armsx3-ui/app/src/main/jniLibs/arm64-v8a/libarmsx3-core.so
 
       - name: Build APK (github flavor)
         working-directory: android/armsx3-ui
