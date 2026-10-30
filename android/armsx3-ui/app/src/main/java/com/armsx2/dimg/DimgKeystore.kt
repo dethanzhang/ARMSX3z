@@ -117,25 +117,74 @@ object DimgKeystore {
         out
     }.getOrNull()
 
-    /** RSA-OAEP(SHA-256) 解 256B → 48B（K_iso||iv）。换机 / 重装 / 换签名都在这失败。 */
+    /**
+     * 设备私钥解不开时记下的原因（给状态页/logcat 看）。
+     * TEE 不支持某个 OAEP 参数组合时，异常全被 Cipher 抛在 init/doFinal 里，
+     * 不记下来就只剩一句没用的 "E6"。
+     */
+    @Volatile
+    private var lastDecryptError: String? = null
+
+    @Keep
+    @JvmStatic
+    fun lastError(): String? = lastDecryptError
+
+    /**
+     * license 里的密钥盒子是 RSA-OAEP（K_iso||iv，48B）。不同厂商的 TEE / StrongBox 对
+     * 「摘要 + MGF1 摘要」的支持不一样：主流是 SHA-256/MGF1-SHA256（发行侧默认），但也有只肯
+     * 做 MGF1-SHA1、甚至只做 SHA-1 的。所以按顺序试三种，第一个成功的就用。
+     *
+     * 三种都是同一份密文：MGF1-SHA1 那两个分支只对「发行侧用对应参数加密」的盒子才解得开，
+     * 所以这里试的顺序不影响正确性 —— 解不开就是解不开，不会误解。
+     */
+    private val OAEP_SPECS: List<Pair<String, OAEPParameterSpec>> = listOf(
+        "sha256/mgf1-sha256" to OAEPParameterSpec(
+            "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT
+        ),
+        "sha256/mgf1-sha1" to OAEPParameterSpec(
+            "SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT
+        ),
+        "sha1/mgf1-sha1" to OAEPParameterSpec(
+            "SHA-1", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT
+        ),
+    )
+
+    /** 解 256B → 48B（K_iso||iv）。换机 / 重装 / 换签名 / TEE 不支持该 OAEP 参数都在这失败。 */
     @Keep
     @JvmStatic
     fun decrypt(box: ByteArray): ByteArray? {
-        if (box.size != BOX_LEN) return null
+        if (box.size != BOX_LEN) {
+            lastDecryptError = "密文长度 ${box.size}，应为 $BOX_LEN"
+            return null
+        }
 
-        return runCatching {
-            val key = keyStore().getKey(ALIAS, null) as? java.security.PrivateKey ?: return null
+        val key = runCatching { keyStore().getKey(ALIAS, null) as? java.security.PrivateKey }
+            .getOrNull()
+        if (key == null) {
+            lastDecryptError = "取不到设备私钥（Keystore 里没有 ${ALIAS}）"
+            return null
+        }
 
-            val cipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
-            // JCA 的 "OAEPWithSHA-256AndMGF1Padding" 默认 MGF1 用 SHA-1 —— 必须显式指定，
-            // 否则签出去的 box（pycryptodome 侧 SHA-256/MGF1-SHA256）一律解不开。
-            val spec = OAEPParameterSpec(
-                "SHA-256", "MGF1", MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT
-            )
-            cipher.init(Cipher.DECRYPT_MODE, key, spec)
-            val plain = cipher.doFinal(box)
-            if (plain.size != PLAIN_LEN) null else plain
-        }.getOrNull()
+        val failures = StringBuilder()
+        for ((label, spec) in OAEP_SPECS) {
+            val result = runCatching {
+                val cipher = Cipher.getInstance("RSA/ECB/OAEPPadding")
+                cipher.init(Cipher.DECRYPT_MODE, key, spec)
+                cipher.doFinal(box)
+            }
+            val plain = result.getOrNull()
+            if (plain != null && plain.size == PLAIN_LEN) {
+                lastDecryptError = null
+                return plain
+            }
+            val why = result.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" }
+                ?: "解出 ${plain?.size} 字节（应为 $PLAIN_LEN）"
+            failures.append("[").append(label).append("] ").append(why).append("; ")
+            android.util.Log.w("ARMSX3-DIMG", "OAEP $label failed: $why")
+        }
+
+        lastDecryptError = "三种 OAEP 参数都失败：$failures"
+        return null
     }
 
     /** 删掉设备密钥。返回 null 表示删成功，否则是说明。 */

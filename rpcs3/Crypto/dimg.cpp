@@ -766,6 +766,12 @@ namespace dimg
 		return ok;
 	}
 
+	// Windows 版没有 Keystore，也没有 Cipher 异常可报
+	static std::string key_open_hint()
+	{
+		return {};
+	}
+
 #elif defined(__ANDROID__) || defined(DIMG_ANDROID_HOST)
 	// ---------------------------------------------------------------- Android（ARMSX3）
 	//
@@ -1125,6 +1131,17 @@ namespace dimg
 	}
 
 	// ---------------------------------------------------------------- 输出 / 报告
+	// 解不开盒子时给玩家的补充说明（Android：带上 Cipher 抛的原文，便于定位 TEE 的问题）
+	static std::string key_open_hint()
+	{
+#ifndef DIMG_ANDROID_HOST
+		const std::string detail = dimg_android::last_error();
+		return detail.empty() ? std::string() : std::string("底层原因：") + detail;
+#else
+		return {};   // 自测构建：没有 Keystore，也没有 Cipher 异常可报
+#endif
+	}
+
 	[[maybe_unused]] static std::string exe_dir()
 	{
 		return config_dir();
@@ -1738,6 +1755,12 @@ namespace dimg
 	}
 
 	// ---------------------------------------------------------------- 输出 / 报告
+	// 非 Android 没有 Keystore 的 Cipher 异常可报
+	static std::string key_open_hint()
+	{
+		return {};
+	}
+
 	static std::string exe_dir()
 	{
 		char buf[4096] = {};
@@ -2383,7 +2406,11 @@ namespace dimg
 
 		if (!opened)
 		{
-			res.reason = "这份授权不是发给本机的（E6）：换过机/卸载重装过，需要重新签一份";
+			res.reason = "这份授权打不开（E6）：设备私钥解不开 license 里的密钥。";
+			{
+				const std::string hint = key_open_hint();
+				res.reason += hint.empty() ? "需要重签一份" : hint;
+			}
 			return res;
 		}
 
@@ -2763,7 +2790,13 @@ namespace dimg
 		if (!opened)
 		{
 			res.status = probe_status::license_invalid;
-			res.detail = "这份授权不是发给本机的（E6）：换过机 / 卸载重装过 / 换了安装包签名，需要重新签一份";
+			res.detail = "这份授权打不开（E6）：设备私钥解不开 license 里的密钥。";
+			{
+				const std::string hint = key_open_hint();
+				res.detail += hint.empty()
+					? "常见原因：换过机 / 卸载重装过 / 换了安装包签名（需要重签一份）"
+					: hint;
+			}
 			return res;
 		}
 

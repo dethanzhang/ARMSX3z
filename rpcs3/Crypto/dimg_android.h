@@ -42,6 +42,9 @@ namespace dimg_android
 	// 删掉设备密钥（--reset 语义）
 	bool keystore_reset(std::string& note);
 
+	// 上一次解盒子失败的原因（Android 侧 Cipher 抛的异常文本；没有失败就是空串）
+	std::string last_error();
+
 	// license 签名校验（ECDSA-P256，uncompressed 公钥 65B + raw r||s 64B；JCA 要 DER，转换在 Kotlin 侧做）
 	bool ecdsa_verify(const unsigned char pub[65], const unsigned char hash[32], const unsigned char sig[64]);
 

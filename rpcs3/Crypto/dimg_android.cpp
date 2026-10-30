@@ -32,6 +32,7 @@ namespace dimg_android
 		jmethodID m_verify = nullptr;    // ecdsaVerify([B[B)Z
 		jmethodID m_hwid = nullptr;      // hwid8()[B
 		jmethodID m_report = nullptr;    // deviceInfo()Ljava/lang/String;
+		jmethodID m_last_error = nullptr; // lastError()Ljava/lang/String;
 
 		// GetEnv，必要时 attach 成 daemon 线程并在退出时 detach（同 saf_device 的 scoped_env）
 		class scoped_env
@@ -179,8 +180,9 @@ namespace dimg_android
 		m_verify  = env->GetStaticMethodID(global, "ecdsaVerify", "([B[B[B)Z");
 		m_hwid    = env->GetStaticMethodID(global, "hwid8", "()[B");
 		m_report  = env->GetStaticMethodID(global, "deviceInfo", "()Ljava/lang/String;");
+		m_last_error = env->GetStaticMethodID(global, "lastError", "()Ljava/lang/String;");
 
-		if (env->ExceptionCheck() || !m_ensure || !m_modulus || !m_decrypt || !m_reset || !m_verify || !m_hwid || !m_report)
+		if (env->ExceptionCheck() || !m_ensure || !m_modulus || !m_decrypt || !m_reset || !m_verify || !m_hwid || !m_report || !m_last_error)
 		{
 			env->ExceptionClear();
 			dimg_android_log.error("DimgKeystore 方法签名不匹配（Kotlin 侧改签名了？）");
@@ -214,7 +216,7 @@ namespace dimg_android
 		}
 
 		g_class = nullptr;
-		m_ensure = m_modulus = m_decrypt = m_reset = m_verify = m_hwid = m_report = nullptr;
+		m_ensure = m_modulus = m_decrypt = m_reset = m_verify = m_hwid = m_report = m_last_error = nullptr;
 		g_vm.store(nullptr, std::memory_order_release);
 	}
 
@@ -415,6 +417,28 @@ namespace dimg_android
 		}
 		return take_string(env, s);
 	}
+
+	std::string last_error()
+	{
+		if (!available() || !m_last_error)
+		{
+			return {};
+		}
+
+		scoped_env env;
+		if (!env)
+		{
+			return {};
+		}
+
+		jstring s = static_cast<jstring>(env.get()->CallStaticObjectMethod(g_class, m_last_error));
+		if (env.get()->ExceptionCheck())
+		{
+			env.clear();
+			return {};
+		}
+		return take_string(env, s);
+	}
 }
 
 #else
@@ -430,6 +454,7 @@ namespace dimg_android
 	bool ecdsa_verify(const unsigned char*, const unsigned char*, const unsigned char*) { return false; }
 	bool hwid8(unsigned char*) { return false; }
 	std::string device_report() { return {}; }
+	std::string last_error() { return {}; }
 }
 
 #endif

@@ -113,6 +113,17 @@ jobs:
           echo "NDK: $ANDROID_HOME/ndk/$NDK_VERSION"
           ls "$ANDROID_HOME/ndk/$NDK_VERSION" | head
 
+      # Debug 签名密钥也要**跨构建固定**：AGP 在 runner 上每次现生成一把，
+      # 签名不同 ⇒ 新包装不到旧包上 ⇒ 必须先卸载 ⇒ AndroidKeyStore 里的设备密钥被销毁
+      # ⇒ 已签发的 license 全部 E6（每次迭代都得重新申请/重签）。
+      # 把 ~/.android/debug.keystore 缓存起来就稳住了；正式发布仍建议用下面的固定密钥。
+      - name: Restore debug signing key
+        id: debugkey
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: armsx3-debug-keystore-v1
+
       # 固定签名密钥（可选但正式发放必须）：没有就用 debug 签名，并在 summary 里报警
       - name: Prepare signing key
         id: signing
@@ -243,6 +254,13 @@ jobs:
           FLAGS=""
           if [ "${{ steps.signing.outputs.signing }}" = "upload" ]; then FLAGS="-Parmsx3.uploadSigning"; fi
           ./gradlew --no-daemon :app:assembleGithubRelease $FLAGS
+
+      - name: Save debug signing key
+        if: steps.debugkey.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: armsx3-debug-keystore-v1
 
       - name: Collect artifacts
         run: |
