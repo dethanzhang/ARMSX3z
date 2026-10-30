@@ -24,7 +24,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SKIP_PARTS = ("/.git/", "/3rdparty/", "/build-android/", "/.github/", "/node_modules/")
+SKIP_PARTS = ("/.git/", "/3rdparty/", "/build-android/", "/.github/", "/node_modules/",
+              # CI 才 clone 进来的第三方（各自的 include 根我们不管；见 README）
+              "/libadrenotools/", "/librashader/")
 INC_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 EXTS = (".cpp", ".h", ".hpp", ".c", ".cc", ".inl")
 
@@ -123,9 +125,14 @@ def main() -> int:
                 continue
             if any(norm(r + "/" + inc) in exact for r in glue_roots) or norm(inc) in exact:
                 continue
-            hits = [p for p in exact if p.lower().endswith("/" + inc.lower())]
+            # 只在「胶水层的 include 根」里找忽略大小写的匹配：
+            # 否则仓库里任何同名文件（比如 libadrenotools/include/...）都会被当成
+            # "大小写不匹配"，那是误报。
+            hits = [p for p in exact
+                    if p.lower().endswith("/" + inc.lower())
+                    and any(p.startswith(r + "/") for r in glue_roots)]
             if not hits:
-                continue        # 标准头 / Windows-only / NDK 头，不归这里管
+                continue        # 标准头 / Windows-only / 第三方 / NDK 头，不归这里管
             key = (inc, hits[0])
             problems += 1
             if key in seen:

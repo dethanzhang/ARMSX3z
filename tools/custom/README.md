@@ -103,6 +103,10 @@ python3 tools/custom/check_include_case.py
 「精确大小写不存在、但忽略大小写存在」的那种 —— 也就是 **macOS 上能编、Linux CI 上
 fatal error** 的坑（上游作者在 macOS 开发，APFS 大小写不敏感）。NDK/bionic 提供的头
 （`elf.h`、`jni.h`、`GLES2/…`）在 `NDK_HEADERS` 白名单里，不会误报。
+
+尖括号那条检查只在「胶水层自己的 include 根」里比对，并且整个跳过 CI 才 clone 的
+`libadrenotools/`、`librashader/`——它们有自己的 include 路径，否则会把
+`<adrenotools/driver.h>` 这种正常的 include 误报成大小写问题（第一次上线就误报了 4 个）。
 CI 的 `Sanity check custom pieces` 里也会跑它。
 
 目前 `tools/custom/shim/` 里有两个只为这种事存在的转发头：
