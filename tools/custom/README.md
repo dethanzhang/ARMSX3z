@@ -157,7 +157,7 @@ CI 的 `Sanity check custom pieces` 里也会跑它。
 | `drawer-kt` | `navigation/NavigationDrawer.kt` | 抽屉入口 + 高亮判定 |
 | `apptab-kt` | `ui/settings/AppTab.kt` | 设置页入口行（含「已激活/未激活」） |
 | `gate-kt` | `runtime/MainActivityRuntime.kt` | 开游戏前的授权闸门 `gateDimg()` |
-| `package-id` | `android/.../app/build.gradle.kts` | `applicationId` → **`com.armsx3custom`**（play flavor → `.play`）：与原版 ARMSX3 同机共存，各自独立的 `/data/data/<pkg>`、Keystore、SAF 授权；manifest 的 authorities 都是 `${applicationId}.*`，不会撞 |
+| `package-id` | `android/.../app/build.gradle.kts` | `applicationId` → **`com.armsx3z`**（play flavor → `com.armsx3z.play`）：与原版 ARMSX3 同机共存，各自独立的 `/data/data/<pkg>`、Keystore、SAF 授权；manifest 的 authorities 都是 `${applicationId}.*`，不会撞 |
 | `discord-aar` | `android/.../app/build.gradle.kts` | 没有 `libs/discord_partner_sdk.aar` 时**不声明**这个依赖，否则 `merge*NativeLibs` 阶段 transform 不存在的 aar 直接失败 |
 | `savers-gl-case` | `android/.../savers/skyrocket/shockwave.cpp` | `<gl/gl.h>` → `<GL/gl.h>`：仓库里是 `savers/compat/GL/gl.h`，macOS 大小写不敏感能编，Linux fatal error |
 | `discord-sdk` | `android/.../app/src/main/cpp/CMakeLists.txt` | 给 `armsx2_discord` 的 aarch64 条件加 `EXISTS` 判断：Discord Social SDK 是专有的、不随仓库分发，git 上拉下来的树里没有 `libdiscord_partner_sdk.so`，否则 ninja 报 "missing and no known rule to make it" |
