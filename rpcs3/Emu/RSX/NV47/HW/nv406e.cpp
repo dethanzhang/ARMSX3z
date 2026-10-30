@@ -37,10 +37,10 @@ namespace rsx
 		void semaphore_acquire(context* ctx, u32 /*reg*/, u32 arg)
 		{
 			RSX(ctx)->sync_point_request.release(true);
-			const u32 addr = get_address(REGS(ctx)->semaphore_offset_406e(), REGS(ctx)->semaphore_context_dma_406e());
+			const u32 addr = get_address(ctx, REGS(ctx)->semaphore_offset_406e(), REGS(ctx)->semaphore_context_dma_406e());
 
 			// Syncronization point, may be associated with memory changes without actually changing addresses
-			RSX(ctx)->m_graphics_state |= rsx::pipeline_state::fragment_program_needs_rehash;
+			ctx->graphics_state |= rsx::pipeline_state::fragment_program_needs_rehash;
 
 			// Ensure atomic seq-cst memory ordering for FIFO GET update
 			atomic_fence_seq_cst();
@@ -54,7 +54,7 @@ namespace rsx
 			if (sema == arg)
 			{
 				// Flip semaphore doesnt need wake-up delay
-				if (addr != RSX(ctx)->label_addr + 0x10)
+				if (addr != ctx->fw.label_addr + 0x10)
 				{
 					//RSX(ctx)->flush_fifo();
 					RSX(ctx)->fifo_wake_delay(2);
@@ -106,6 +106,12 @@ namespace rsx
 				{
 					RSX(ctx)->state += cpu_flag::again;
 					return;
+				}
+
+				if (ctx->fw.free_requested)
+				{
+					// lv2 waits for the context to be freed, which only happens once this method returns
+					break;
 				}
 
 				if (const auto tdr = static_cast<u64>(g_cfg.video.driver_recovery_timeout))
@@ -183,7 +189,7 @@ namespace rsx
 					continue;
 				}
 
-				RSX(ctx)->on_semaphore_acquire_wait();
+				RSX(ctx)->renderer()->on_semaphore_acquire_wait();
 
 				RSX_PROF_SCOPE(idle_sema);
 
@@ -259,10 +265,10 @@ namespace rsx
 				RSX(ctx)->sync_point_request.release(true);
 			}
 
-			const u32 addr = get_address(offset, ctxt);
+			const u32 addr = get_address(ctx, offset, ctxt);
 
 			// TODO: Check if possible to write on reservations
-			if (RSX(ctx)->label_addr >> 28 != addr >> 28)
+			if (ctx->fw.label_addr >> 28 != addr >> 28)
 			{
 				rsx_log.error("NV406E semaphore unexpected address. Please report to the developers. (offset=0x%x, addr=0x%x)", offset, addr);
 				RSX(ctx)->recover_fifo();

@@ -208,7 +208,10 @@ namespace rsx
 
 	bool dma_manager::can_offload() const
 	{
-		return g_cfg.video.multithreaded_rsx && is_offloader_running();
+		// Not to a thread that is being stopped: join() aborts it, its loop exits on that without
+		// draining, and anything handed over afterwards would never run.
+		return g_cfg.video.multithreaded_rsx && is_offloader_running() &&
+			static_cast<thread_state>(*m_thread) == thread_state::created;
 	}
 
 	bool dma_manager::is_offloader_running() const
@@ -335,7 +338,7 @@ namespace rsx
 					}
 				}
 
-				rsxthr->on_semaphore_acquire_wait();
+				rsxthr->renderer()->on_semaphore_acquire_wait();
 
 				if (++spins < 500 || static_cast<thread_state>(_thr) != thread_state::created)
 				{

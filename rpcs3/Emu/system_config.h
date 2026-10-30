@@ -120,9 +120,9 @@ struct cfg_root : cfg::node
 		node_video(cfg::node* _this) : cfg::node(_this, "Video") {}
 
 #if defined(HAVE_VULKAN)
-		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::vulkan };
+		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::vulkan, true };
 #else
-		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::opengl };
+		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::opengl, true };
 #endif
 
 		cfg::_enum<video_resolution> resolution{ this, "Resolution", video_resolution::_720p };
@@ -261,12 +261,23 @@ struct cfg_root : cfg::node
 		{
 			node_vk(cfg::node* _this) : cfg::node(_this, "Vulkan") {}
 
-			cfg::string adapter{ this, "Adapter" };
+			cfg::string adapter{ this, "Adapter", "", true };
 			cfg::_enum<vk_exclusive_fs_mode> exclusive_fullscreen_mode{ this, "Exclusive Fullscreen Mode", vk_exclusive_fs_mode::unspecified};
 			cfg::_bool asynchronous_texture_streaming{ this, "Asynchronous Texture Streaming", false };
 			cfg::_enum<vk_gpu_scheduler_mode> asynchronous_scheduler{ this, "Asynchronous Queue Scheduler", vk_gpu_scheduler_mode::safe };
 			cfg::uint<256, 65536> vram_allocation_limit{ this, "VRAM allocation limit (MB)", 65536, false };
+#ifdef __ANDROID__
+			// ARMSX3: left on. Android has no Re-BAR; the name only fits desktop cards. RPCS3 counts any
+			// device-local, host-visible, coherent memory type as "BAR", and on a phone that is plain
+			// RAM (our logs: "Detected 15995 MB of BAR memory"). So here this only picks the memory type
+			// of the upload rings: on, the first coherent type; off, the CPU-cached coherent one where
+			// the driver has it. Every build so far ran with it on and older installs keep it on in
+			// config.yml, so following upstream's new default would split users by install date.
+			// A/B it on a device before changing it.
 			cfg::_bool use_rebar_upload_heap{ this, "Use Re-BAR for GPU uploads", true, false };
+#else
+			cfg::_bool use_rebar_upload_heap{ this, "Use Re-BAR for GPU uploads", false, false };
+#endif
 
 		} vk{ this };
 
@@ -398,6 +409,7 @@ struct cfg_root : cfg::node
 		cfg::_bool mouse_debug_overlay{ this, "Mouse Debug overlay", false, true };
 		cfg::uint<1, 180> fake_move_rotation_cone_h{ this, "Fake Move Rotation Cone", 10, true };
 		cfg::uint<1, 180> fake_move_rotation_cone_v{ this, "Fake Move Rotation Cone (Vertical)", 10, true };
+		cfg::_enum<usio_handler_mode> usio_mode{ this, "USIO handler mode", usio_handler_mode::fighting_games };
 
 	} io{ this };
 

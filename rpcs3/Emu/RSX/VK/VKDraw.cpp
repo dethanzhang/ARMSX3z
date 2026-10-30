@@ -158,7 +158,7 @@ void VKGSRender::invalidate_render_pass()
 {
 	// Regenerate renderpass key for the next draw call
 	std::vector<u8> input_attachments{};
-	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
+	if (m_ctx->program.fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
 	{
 		input_attachments.resize(m_draw_buffers.size());
 		std::iota(input_attachments.begin(), input_attachments.end(), 0);
@@ -186,62 +186,65 @@ void VKGSRender::set_extended_dynamic_state()
 	_vkCmdSetPrimitiveTopologyEXT(*m_current_command_buffer, m_current_primitive_topology);
 
 	_vkCmdSetCullModeEXT(*m_current_command_buffer,
-		rsx::method_registers.cull_face_enabled()
-			? vk::get_cull_face(rsx::method_registers.cull_face_mode())
+		REGS(m_ctx)->cull_face_enabled()
+			? vk::get_cull_face(REGS(m_ctx)->cull_face_mode())
 			: VK_CULL_MODE_NONE);
 
 	_vkCmdSetFrontFaceEXT(*m_current_command_buffer,
-		vk::get_front_face(rsx::method_registers.front_face_mode()));
+		vk::get_front_face(REGS(m_ctx)->front_face_mode()));
 
 	// Depth write and compare op are meaningless with the test off, and decode_rsx_state left
 	// both at zero in that case rather than at whatever the RSX registers happened to hold.
 	// Reproduce that exactly: a driver that reads the compare op regardless of the test must see
 	// the value it saw before this change.
-	const bool depth_test_enabled = rsx::method_registers.depth_test_enabled();
+	const bool depth_test_enabled = REGS(m_ctx)->depth_test_enabled();
 
 	_vkCmdSetDepthTestEnableEXT(*m_current_command_buffer, depth_test_enabled ? VK_TRUE : VK_FALSE);
 
 	_vkCmdSetDepthWriteEnableEXT(*m_current_command_buffer,
-		(depth_test_enabled && rsx::method_registers.depth_write_enabled()) ? VK_TRUE : VK_FALSE);
+		(depth_test_enabled && REGS(m_ctx)->depth_write_enabled()) ? VK_TRUE : VK_FALSE);
 
 	_vkCmdSetDepthCompareOpEXT(*m_current_command_buffer,
-		depth_test_enabled ? vk::get_compare_func(rsx::method_registers.depth_func()) : VK_COMPARE_OP_NEVER);
+		depth_test_enabled ? vk::get_compare_func(REGS(m_ctx)->depth_func()) : VK_COMPARE_OP_NEVER);
 }
 
 void VKGSRender::update_draw_state()
 {
 	m_profiler.start();
 
+	const auto& raster = m_ctx->draw_state.raster;
+	const auto& depth_stencil = m_ctx->draw_state.depth_stencil;
+	const auto& blend = m_ctx->draw_state.blend;
+
 	// Update conditional dynamic state
-	if (rsx::method_registers.current_draw_clause.primitive >= rsx::primitive_type::points &&   // AMD/AMDVLK driver does not like it if you render points without setting line width for some reason
-		rsx::method_registers.current_draw_clause.primitive <= rsx::primitive_type::line_strip)
+	if (REGS(m_ctx)->current_draw_clause.primitive >= rsx::primitive_type::points &&   // AMD/AMDVLK driver does not like it if you render points without setting line width for some reason
+		REGS(m_ctx)->current_draw_clause.primitive <= rsx::primitive_type::line_strip)
 	{
 		const float actual_line_width =
-			m_device->get_wide_lines_support() ? rsx::method_registers.line_width() * resolution_scaling_config.scale_factor() : 1.f;
+			m_device->get_wide_lines_support() ? raster.line_width * RSX(m_ctx)->resolution_scaling_config.scale_factor() : 1.f;
 		vkCmdSetLineWidth(*m_current_command_buffer, actual_line_width);
 	}
 
-	if (rsx::method_registers.blend_enabled_mask())
+	if (blend.enable_mask)
 	{
 		// Update blend constants
-		auto blend_colors = rsx::get_constant_blend_colors();
-		vkCmdSetBlendConstants(*m_current_command_buffer, blend_colors.data());
+		vkCmdSetBlendConstants(*m_current_command_buffer, blend.constant_color.data());
 	}
 
-	if (rsx::method_registers.stencil_test_enabled())
+	if (depth_stencil.stencil_test_enabled)
 	{
-		const bool two_sided_stencil = rsx::method_registers.two_sided_stencil_test_enabled();
+		const bool two_sided_stencil = depth_stencil.two_sided_stencil_test_enabled;
 		VkStencilFaceFlags face_flag = (two_sided_stencil) ? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FRONT_AND_BACK;
 
-		vkCmdSetStencilWriteMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_mask());
-		vkCmdSetStencilCompareMask(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_mask());
-		vkCmdSetStencilReference(*m_current_command_buffer, face_flag, rsx::method_registers.stencil_func_ref());
+		vkCmdSetStencilWriteMask(*m_current_command_buffer, face_flag, depth_stencil.front.write_mask);
+		vkCmdSetStencilCompareMask(*m_current_command_buffer, face_flag, depth_stencil.front.func_mask);
+		vkCmdSetStencilReference(*m_current_command_buffer, face_flag, depth_stencil.front.func_ref);
 
 		if (two_sided_stencil)
 		{
-			vkCmdSetStencilWriteMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_mask());
-			vkCmdSetStencilCompareMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_mask());
-			vkCmdSetStencilReference(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, rsx::method_registers.back_stencil_func_ref());
+			vkCmdSetStencilWriteMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, depth_stencil.back.write_mask);
+			vkCmdSetStencilCompareMask(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, depth_stencil.back.func_mask);
+			vkCmdSetStencilReference(*m_current_command_buffer, VK_STENCIL_FACE_BACK_BIT, depth_stencil.back.func_ref);
 		}
 	}
 
@@ -249,19 +252,19 @@ void VKGSRender::update_draw_state()
 	if (!(m_current_command_buffer->flags & vk::command_buffer::cb_reload_dynamic_state))
 	{
 		// Dynamic state already set
-		m_frame_stats.setup_time += m_profiler.duration();
+		m_ctx->stats.setup_time += m_profiler.duration();
 		return;
 	}
 
-	if (rsx::method_registers.poly_offset_fill_enabled())
+	if (raster.poly_offset_fill_enabled)
 	{
 		// offset_bias is the constant factor, multiplied by the implementation factor R
 		// offst_scale is the slope factor, multiplied by the triangle slope factor M
 		// R is implementation dependent and has to be derived empirically for supported implementations.
 		// Lucky for us, only NVIDIA currently supports fixed-point 24-bit depth buffers.
 
-		const auto polygon_offset_scale = rsx::method_registers.poly_offset_scale();
-		auto polygon_offset_bias = rsx::method_registers.poly_offset_bias();
+		const auto polygon_offset_scale = raster.poly_offset_scale;
+		auto polygon_offset_bias = raster.poly_offset_bias;
 
 		if (!m_draw_fbo->attachments.empty() &&
 			m_draw_fbo->depth_format() == VK_FORMAT_D24_UNORM_S8_UINT &&
@@ -285,23 +288,22 @@ void VKGSRender::update_draw_state()
 	if (m_device->get_depth_bounds_support())
 	{
 		f32 bounds_min, bounds_max;
-		if (REGS(m_ctx)->depth_bounds_test_enabled())
+		if (depth_stencil.depth_bounds_test_enabled)
 		{
-			// Update depth bounds min/max, saturated into the RSX depth format's range as hardware does
-			const auto depth_format = REGS(m_ctx)->surface_depth_fmt();
-			bounds_min = rsx::clamp_depth_bounds_value(depth_format, REGS(m_ctx)->depth_bounds_min());
-			bounds_max = rsx::clamp_depth_bounds_value(depth_format, REGS(m_ctx)->depth_bounds_max());
+			// Update depth bounds min/max, already saturated into the RSX depth format's range by the core
+			bounds_min = depth_stencil.depth_bounds_min;
+			bounds_max = depth_stencil.depth_bounds_max;
 		}
 		else
 		{
 			// Avoid special case where min=max and depth bounds (incorrectly) fails
-			bounds_min = std::min(0.f, rsx::method_registers.clip_min());
-			bounds_max = std::max(1.f, rsx::method_registers.clip_max());
+			bounds_min = std::min(0.f, m_ctx->draw_state.viewport.z_clip_min);
+			bounds_max = std::max(1.f, m_ctx->draw_state.viewport.z_clip_max);
 		}
 
-		if (!backend_config.supports_extended_depth_range)
+		if (!m_config.supports_extended_depth_range)
 		{
-			if (rsx::method_registers.depth_bounds_test_enabled() && requires_depth_range_emulation()) [[ unlikely ]]
+			if (depth_stencil.depth_bounds_test_enabled && RSX(m_ctx)->core().graph().requires_depth_range_emulation()) [[ unlikely ]]
 			{
 				bounds_min = rsx::encode_emulated_depth(bounds_min);
 				bounds_max = rsx::encode_emulated_depth(bounds_max);
@@ -317,11 +319,10 @@ void VKGSRender::update_draw_state()
 	bind_viewport();
 
 	m_current_command_buffer->flags &= ~vk::command_buffer::cb_reload_dynamic_state;
-	m_graphics_state.clear(rsx::pipeline_state::polygon_offset_state_dirty | rsx::pipeline_state::depth_bounds_state_dirty);
-	m_frame_stats.setup_time += m_profiler.duration();
+	m_ctx->stats.setup_time += m_profiler.duration();
 }
 
-void VKGSRender::load_texture_env()
+rsx::flags32_t VKGSRender::load_texture_env()
 {
 	// Per-draw texture cache search, surface-cache expiry tests and sampler lookup.
 	// texcache_lookup's only other site is on_access_violation, which runs on guest
@@ -329,10 +330,11 @@ void VKGSRender::load_texture_env()
 	RSX_PROF_SCOPE(texcache_lookup);
 
 	// Load textures
+	rsx::flags32_t invalidated_programs = 0;
 	bool check_for_cyclic_refs = false;
 	auto check_surface_cache_sampler_valid = [&](auto descriptor, const auto& tex)
 	{
-		if (!m_texture_cache.test_if_descriptor_expired(*m_current_command_buffer, m_rtts, descriptor, tex))
+		if (!res()->texture_cache.test_if_descriptor_expired(*m_current_command_buffer, res()->surface_cache, descriptor, tex))
 		{
 			check_for_cyclic_refs |= descriptor->is_cyclic_reference;
 			return true;
@@ -350,31 +352,30 @@ void VKGSRender::load_texture_env()
 
 	std::lock_guard lock(m_sampler_mutex);
 
-	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
+	for (u32 textures_ref = m_ctx->program.fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
 		if (!(textures_ref & 1))
 		{
 			continue;
 		}
 
-		if (!fs_sampler_state[i])
+		if (!m_fs_sampler_descriptors[i])
 		{
-			fs_sampler_state[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
+			m_fs_sampler_descriptors[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
 		}
 
-		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
-		const auto& tex = rsx::method_registers.fragment_textures[i];
-		const auto previous_format_class = fs_sampler_state[i]->format_class;
+		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(m_fs_sampler_descriptors[i].get());
+		const auto& tex = REGS(m_ctx)->fragment_textures[i];
+		const auto previous_format_class = m_fs_sampler_descriptors[i]->format_class;
 
 		if (!m_samplers_dirty &&
-			!m_textures_dirty[i] &&
+			!(m_ctx->textures.fragment_textures_dirty & (1u << i)) &&
 			check_surface_cache_sampler_valid(sampler_state, tex))
 		{
 			continue;
 		}
 
-		const bool is_sampler_dirty = m_textures_dirty[i];
-		m_textures_dirty[i] = false;
+		const bool is_sampler_dirty = !!(m_ctx->textures.fragment_textures_dirty & (1u << i));
 
 		if (!tex.enabled())
 		{
@@ -382,7 +383,7 @@ void VKGSRender::load_texture_env()
 			continue;
 		}
 
-		*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, tex, m_rtts);
+		*sampler_state = res()->texture_cache.upload_texture(*m_current_command_buffer, tex, res()->surface_cache);
 		if (!sampler_state->validate())
 		{
 			continue;
@@ -398,7 +399,7 @@ void VKGSRender::load_texture_env()
 			if (sampler_state->format_class != previous_format_class)
 			{
 				// Host details changed but RSX is not aware
-				m_graphics_state |= rsx::fragment_program_state_dirty;
+				invalidated_programs |= rsx::fragment_program_state_dirty;
 			}
 
 			if (sampler_state->format_ex)
@@ -413,7 +414,7 @@ void VKGSRender::load_texture_env()
 		if (sampler_state->format_ex.texel_remap_control &&
 			sampler_state->image_handle &&
 			sampler_state->upload_context == rsx::texture_upload_context::shader_read &&
-			(current_fp_metadata.bx2_texture_reads_mask & (1u << i)) == 0 &&
+			(m_ctx->program.fp_metadata.bx2_texture_reads_mask & (1u << i)) == 0 &&
 			!g_cfg.video.disable_hardware_texel_remapping) [[ unlikely ]]
 		{
 			// Check if we need to override the view format
@@ -583,39 +584,38 @@ void VKGSRender::load_texture_env()
 			border_color, compare_enabled, depth_compare_mode);
 	}
 
-	for (u32 textures_ref = current_vp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
+	for (u32 textures_ref = m_ctx->program.vp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
 		if (!(textures_ref & 1))
 		{
 			continue;
 		}
 
-		if (!vs_sampler_state[i])
+		if (!m_vs_sampler_descriptors[i])
 		{
-			vs_sampler_state[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
+			m_vs_sampler_descriptors[i] = std::make_unique<vk::texture_cache::sampled_image_descriptor>();
 		}
 
-		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
-		const auto& tex = rsx::method_registers.vertex_textures[i];
+		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(m_vs_sampler_descriptors[i].get());
+		const auto& tex = REGS(m_ctx)->vertex_textures[i];
 		const auto previous_format_class = sampler_state->format_class;
 
 		if (!m_samplers_dirty &&
-			!m_vertex_textures_dirty[i] &&
+			!(m_ctx->textures.vertex_textures_dirty & (1u << i)) &&
 			check_surface_cache_sampler_valid(sampler_state, tex))
 		{
 			continue;
 		}
 
-		const bool is_sampler_dirty = m_vertex_textures_dirty[i];
-		m_vertex_textures_dirty[i] = false;
+		const bool is_sampler_dirty = !!(m_ctx->textures.vertex_textures_dirty & (1u << i));
 
-		if (!rsx::method_registers.vertex_textures[i].enabled())
+		if (!REGS(m_ctx)->vertex_textures[i].enabled())
 		{
 			*sampler_state = {};
 			continue;
 		}
 
-		*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, tex, m_rtts);
+		*sampler_state = res()->texture_cache.upload_texture(*m_current_command_buffer, tex, res()->surface_cache);
 		if (!sampler_state->validate())
 		{
 			continue;
@@ -631,7 +631,7 @@ void VKGSRender::load_texture_env()
 			if (sampler_state->format_class != previous_format_class)
 			{
 				// Host details changed but RSX is not aware
-				m_graphics_state |= rsx::vertex_program_state_dirty;
+				invalidated_programs |= rsx::vertex_program_state_dirty;
 			}
 
 			if (vs_sampler_handles[i])
@@ -670,11 +670,11 @@ void VKGSRender::load_texture_env()
 
 	m_samplers_dirty.store(false);
 
-	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE)
+	if (m_ctx->program.fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE)
 	{
 		// Transition our FBO to a loop-friendly format.
 		// We can also convert it into an input attachment, but for now this is easier.
-		auto ds = ensure(m_rtts.m_bound_depth_stencil.second, "Invalid FS export configuration.");
+		auto ds = ensure(res()->surface_cache.m_bound_depth_stencil.second, "Invalid FS export configuration.");
 		ds->texture_barrier(*m_current_command_buffer);
 
 		check_for_cyclic_refs = true;
@@ -686,7 +686,7 @@ void VKGSRender::load_texture_env()
 		invalidate_render_pass();
 	}
 
-	if (backend_config.supports_asynchronous_compute)
+	if (m_config.supports_asynchronous_compute)
 	{
 		// We have to do this here, because we have to assume the CB will be dumped
 		auto async_task_scheduler = g_fxo->try_get<vk::AsyncTaskScheduler>();
@@ -702,6 +702,8 @@ void VKGSRender::load_texture_env()
 			}
 		}
 	}
+
+	return invalidated_programs;
 }
 
 bool VKGSRender::bind_texture_env()
@@ -712,7 +714,7 @@ bool VKGSRender::bind_texture_env()
 
 	bool out_of_memory = false;
 
-	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
+	for (u32 textures_ref = m_ctx->program.fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
 		if (!(textures_ref & 1))
 		{
@@ -727,15 +729,15 @@ bool VKGSRender::bind_texture_env()
 		}
 
 		vk::image_view* view = nullptr;
-		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
+		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(m_fs_sampler_descriptors[i].get());
 
-		if (rsx::method_registers.fragment_textures[i].enabled() &&
+		if (REGS(m_ctx)->fragment_textures[i].enabled() &&
 			sampler_state->validate())
 		{
 			if (view = sampler_state->image_handle; !view)
 			{
 				//Requires update, copy subresource
-				if (!(view = m_texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
+				if (!(view = res()->texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
 				{
 					out_of_memory = true;
 				}
@@ -752,7 +754,7 @@ bool VKGSRender::bind_texture_env()
 				vk::glsl::binding_set_index_fragment,
 				m_fs_binding_table->ftex_location[i]);
 
-			if (current_fragment_program.texture_state.redirected_textures & (1 << i))
+			if (m_ctx->program.fragment_program.texture_state.redirected_textures & (1 << i))
 			{
 				// Stencil mirror required
 				auto root_image = static_cast<vk::viewable_image*>(view->image());
@@ -776,13 +778,13 @@ bool VKGSRender::bind_texture_env()
 		}
 		else
 		{
-			const VkImageViewType view_type = vk::get_view_type(current_fragment_program.get_texture_dimension(i));
+			const VkImageViewType view_type = vk::get_view_type(m_ctx->program.fragment_program.get_texture_dimension(i));
 			const VkDescriptorImageInfoEx desc = { *vk::null_image_view(*m_current_command_buffer, view_type), vk::null_sampler() };
 			m_program->bind_uniform(desc,
 				vk::glsl::binding_set_index_fragment,
 				m_fs_binding_table->ftex_location[i]);
 
-			if (current_fragment_program.texture_state.redirected_textures & (1 << i))
+			if (m_ctx->program.fragment_program.texture_state.redirected_textures & (1 << i))
 			{
 				m_program->bind_uniform(desc,
 					vk::glsl::binding_set_index_fragment,
@@ -791,7 +793,7 @@ bool VKGSRender::bind_texture_env()
 		}
 	}
 
-	for (u32 textures_ref = current_vp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
+	for (u32 textures_ref = m_ctx->program.vp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
 		if (!(textures_ref & 1))
 		{
@@ -805,9 +807,9 @@ bool VKGSRender::bind_texture_env()
 			break;
 		}
 
-		if (!rsx::method_registers.vertex_textures[i].enabled())
+		if (!REGS(m_ctx)->vertex_textures[i].enabled())
 		{
-			const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
+			const auto view_type = vk::get_view_type(m_ctx->program.vertex_program.get_texture_dimension(i));
 			m_program->bind_uniform({ *vk::null_image_view(*m_current_command_buffer, view_type), vk::null_sampler() },
 				vk::glsl::binding_set_index_vertex,
 				m_vs_binding_table->vtex_location[i]);
@@ -815,12 +817,12 @@ bool VKGSRender::bind_texture_env()
 			continue;
 		}
 
-		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
+		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(m_vs_sampler_descriptors[i].get());
 		auto image_ptr = sampler_state->image_handle;
 
 		if (!image_ptr && sampler_state->validate())
 		{
-			if (!(image_ptr = m_texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
+			if (!(image_ptr = res()->texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
 			{
 				out_of_memory = true;
 			}
@@ -829,7 +831,7 @@ bool VKGSRender::bind_texture_env()
 		if (!image_ptr)
 		{
 			rsx_log.error("Texture upload failed to vtexture index %d. Binding null sampler.", i);
-			const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
+			const auto view_type = vk::get_view_type(m_ctx->program.vertex_program.get_texture_dimension(i));
 
 			m_program->bind_uniform({ *vk::null_image_view(*m_current_command_buffer, view_type), vk::null_sampler() },
 				vk::glsl::binding_set_index_vertex,
@@ -845,19 +847,19 @@ bool VKGSRender::bind_texture_env()
 			m_vs_binding_table->vtex_location[i]);
 	}
 
-	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE)
+	if (m_ctx->program.fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE)
 	{
-		auto ds = ensure(m_rtts.m_bound_depth_stencil.second);
+		auto ds = ensure(res()->surface_cache.m_bound_depth_stencil.second);
 		auto view = ds->get_view(rsx::default_remap_vector, VK_IMAGE_ASPECT_DEPTH_BIT);
 		m_program->bind_uniform({ *view, vk::null_sampler() }, vk::glsl::binding_set_index_fragment, m_fs_binding_table->frag_depth_input_location);
 	}
 
-	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
+	if (m_ctx->program.fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
 	{
-		ensure(current_fragment_program.mrt_buffers_count == m_draw_buffers.size());
+		ensure(m_ctx->program.fragment_program.mrt_buffers_count == m_draw_buffers.size());
 		const auto remap = rsx::default_remap_vector.with_encoding(vk::VK_REMAP_IDENTITY);
 
-		for (u32 i = 0; i < current_fragment_program.mrt_buffers_count; ++i)
+		for (u32 i = 0; i < m_ctx->program.fragment_program.mrt_buffers_count; ++i)
 		{
 			auto viewable = static_cast<vk::viewable_image*>(m_fbo_images[i]);
 			if (viewable->current_layout != VK_IMAGE_LAYOUT_GENERAL &&
@@ -878,7 +880,7 @@ bool VKGSRender::bind_texture_env()
 
 bool VKGSRender::bind_interpreter_texture_env()
 {
-	if (current_fp_metadata.referenced_textures_mask == 0)
+	if (m_ctx->program.fp_metadata.referenced_textures_mask == 0)
 	{
 		// Nothing to do
 		return false;
@@ -967,28 +969,28 @@ bool VKGSRender::bind_interpreter_texture_env()
 				? rtt->get_memory_range()
 				: utils::address_range32::start_length(desc->ref_address, attr.pitch * attr.height);
 
-			return m_texture_cache.create_temporary_subresource(*m_current_command_buffer, flatten_op);
+			return res()->texture_cache.create_temporary_subresource(*m_current_command_buffer, flatten_op);
 		}
 
 		image->change_layout(*m_current_command_buffer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		return image->get_view(decoded_remap, base->info.subresourceRange.aspectMask);
 	};
 
-	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
+	for (u32 textures_ref = m_ctx->program.fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
 		if (!(textures_ref & 1))
 			continue;
 
 		vk::image_view* view = nullptr;
-		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
+		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(m_fs_sampler_descriptors[i].get());
 
-		auto& tex = rsx::method_registers.fragment_textures[i];
+		auto& tex = REGS(m_ctx)->fragment_textures[i];
 		if (tex.enabled() && sampler_state->validate())
 		{
 			if (view = sampler_state->image_handle; !view)
 			{
 				//Requires update, copy subresource
-				if (!(view = m_texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
+				if (!(view = res()->texture_cache.create_temporary_subresource(*m_current_command_buffer, sampler_state->external_subresource_desc)))
 				{
 					out_of_memory = true;
 				}
@@ -1007,8 +1009,8 @@ bool VKGSRender::bind_interpreter_texture_env()
 		if (view->image()->samples() > 1 || view->info.subresourceRange.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT)
 		{
 			const auto mask = (1u << i);
-			const bool is_redirected = !!(current_fragment_program.texture_state.redirected_textures & mask);
-			const bool is_msaa = !!(current_fragment_program.texture_state.multisampled_textures & mask);
+			const bool is_redirected = !!(m_ctx->program.fragment_program.texture_state.redirected_textures & mask);
+			const bool is_msaa = !!(m_ctx->program.fragment_program.texture_state.multisampled_textures & mask);
 			if (is_redirected || is_msaa)
 			{
 				view = decay_view_for_interpreter(
@@ -1049,7 +1051,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	// profile read 83.9% there and could not say what any of it was.
 	RSX_PROF_SCOPE(vertex);
 
-	auto &draw_call = rsx::method_registers.current_draw_clause;
+	auto &draw_call = REGS(m_ctx)->current_draw_clause;
 	m_profiler.start();
 
 	const rsx::flags32_t vertex_state_mask = rsx::vertex_base_changed | rsx::vertex_arrays_changed;
@@ -1057,7 +1059,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 
 	if (state_flags & rsx::vertex_arrays_changed)
 	{
-		m_draw_processor.analyse_inputs_interleaved(m_vertex_layout, current_vp_metadata);
+		RSX(m_ctx)->draw_processor()->analyse_inputs_interleaved(m_vertex_layout, m_ctx->program.vp_metadata);
 	}
 	else if (state_flags & rsx::vertex_base_changed)
 	{
@@ -1065,8 +1067,8 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		for (auto& info : m_vertex_layout.interleaved_blocks)
 		{
 			info->vertex_range.second = 0;
-			const auto vertex_base_offset = rsx::method_registers.vertex_data_base_offset();
-			info->real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(vertex_base_offset, info->base_offset), info->memory_location);
+			const auto vertex_base_offset = REGS(m_ctx)->vertex_data_base_offset();
+			info->real_offset_address = rsx::get_address(m_ctx, rsx::get_vertex_offset_from_base(vertex_base_offset, info->base_offset), info->memory_location);
 		}
 	}
 	else
@@ -1100,7 +1102,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		return;
 	}
 
-	m_frame_stats.vertex_upload_time += m_profiler.duration();
+	m_ctx->stats.vertex_upload_time += m_profiler.duration();
 
 	// Faults are allowed during vertex upload. Ensure consistent CB state after uploads.
 	// Queries are spawned and closed outside render pass scope for consistency reasons.
@@ -1111,13 +1113,13 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		{
 			// Force flush
 			rsx_log.warning("[Performance Warning] Out of free occlusion slots. Forcing hard sync.");
-			ZCULL_control::sync(this);
+			RSX(m_ctx)->zcull().sync(RSX(m_ctx));
 
 			occlusion_id = m_occlusion_query_manager->allocate_query(*m_current_command_buffer);
 			if (occlusion_id == umax)
 			{
 				//rsx_log.error("Occlusion pool overflow");
-				if (m_current_task) m_current_task->result = 1;
+				if (auto task = RSX(m_ctx)->zcull().get_current_query_task()) task->result = 1;
 			}
 		}
 
@@ -1136,7 +1138,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 
 		m_occlusion_query_manager->begin_query(*m_current_command_buffer, occlusion_id);
 
-		auto& data = m_occlusion_map[m_active_query_info->driver_handle];
+		auto& data = m_occlusion_map[m_active_query_info->slot_index];
 		data.indices.push_back(occlusion_id);
 		data.set_sync_command_buffer(m_current_command_buffer);
 
@@ -1153,7 +1155,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		update_descriptors = true;
 
 		// Allocate stream layout memory for this batch
-		const u64 alloc_size = rsx::method_registers.current_draw_clause.pass_count() * 168;
+		const u64 alloc_size = REGS(m_ctx)->current_draw_clause.pass_count() * 168;
 		m_vertex_layout_dynamic_offset = m_vertex_layout_ring_info.alloc<8>(alloc_size);
 	}
 
@@ -1187,10 +1189,10 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		reload_state = true;
 	});
 
-	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
+	if (m_ctx->program.fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING)
 	{
 		// Subpass inter-draw dependency for input attachment reads. Preserves open renderpasses.
-		for (u32 i = 0; i < current_fragment_program.mrt_buffers_count; ++i)
+		for (u32 i = 0; i < m_ctx->program.fragment_program.mrt_buffers_count; ++i)
 		{
 			vk::insert_image_memory_barrier(
 				*m_current_command_buffer,
@@ -1222,7 +1224,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		update_draw_state();
 		begin_render_pass();
 
-		if (cond_render_ctrl.hw_cond_active && m_device->get_conditional_render_support())
+		if (m_ctx->cond_render.hw_cond_active && m_device->get_conditional_render_support())
 		{
 			// It is inconvenient that conditional rendering breaks other things like compute dispatch
 			// TODO: If this is heavy, add refactor the resources into global and add checks around compute dispatch
@@ -1236,7 +1238,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	}
 
 	// Bind the new set of descriptors for use with this draw call
-	m_frame_stats.setup_time += m_profiler.duration();
+	m_ctx->stats.setup_time += m_profiler.duration();
 
 	if (!upload_info.index_info)
 	{
@@ -1281,7 +1283,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 			if (rsx::prof::enabled()) [[unlikely]] rsx::prof::note_subdraws(draw_call.pass_count());
 			vkCmdDrawIndexed(*m_current_command_buffer, upload_info.vertex_draw_count, draw_call.pass_count(), 0, 0, 0);
 		}
-		else if (rsx::method_registers.current_draw_clause.is_single_draw())
+		else if (REGS(m_ctx)->current_draw_clause.is_single_draw())
 		{
 			if (rsx::prof::enabled()) [[unlikely]] rsx::prof::note_subdraws(1);
 			vkCmdDrawIndexed(*m_current_command_buffer, upload_info.vertex_draw_count, 1, 0, 0, 0);
@@ -1325,10 +1327,10 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		}
 	}
 
-	m_frame_stats.draw_exec_time += m_profiler.duration();
+	m_ctx->stats.draw_exec_time += m_profiler.duration();
 }
 
-void VKGSRender::begin()
+void VKGSRender::begin_draw()
 {
 	// Everything a draw costs before geometry is emitted. The scopes it calls into nest inside
 	// and are charged to themselves; draw_setup is only ever the remainder. Calling that
@@ -1336,20 +1338,9 @@ void VKGSRender::begin()
 	// so every block with a body of its own now carries a scope and this keeps the leftovers.
 	RSX_PROF_SCOPE(draw_setup);
 
-	// Save shader state now before prefetch and loading happens
-	m_interpreter_state = (m_graphics_state.load() & rsx::pipeline_state::invalidate_pipeline_bits);
+	set_scissor();
 
-	rsx::thread::begin();
-
-	if (skip_current_frame ||
-		cond_render_ctrl.disable_rendering())
-	{
-		return;
-	}
-
-	init_buffers(rsx::framebuffer_creation_context::context_draw);
-
-	if (m_graphics_state & rsx::pipeline_state::invalidate_pipeline_bits)
+	if (m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::programs))
 	{
 		// Shaders need to be reloaded.
 		m_prev_program = m_program;
@@ -1357,29 +1348,15 @@ void VKGSRender::begin()
 	}
 }
 
-void VKGSRender::end()
+bool VKGSRender::resolve_sampler_state(rsx::flags32_t& invalidated_programs)
 {
-	// begin() carries a scope and end() did not, so every per-draw cost here fell through
-	// to fifo_decode -- which is the ENCLOSING scope of the whole RSX loop, not a decode
-	// measurement. That is why fifo_decode read as 100% of the RSX thread while the FIFO
-	// itself only accounts for a couple of milliseconds.
+	// Draw setup that used to open end_draw(): the frame resource check and the texture
+	// environment. Billed to the same draw_setup bucket as end_draw(), so the split does not
+	// show in the report.
 	RSX_PROF_SCOPE(draw_setup);
 
-	if (m_frame_dump.active) [[unlikely]]
-	{
-		m_frame_dump.draws++;
-	}
-
-	if (should_skip_draw())
-	{
-		execute_nop_draw();
-		rsx::thread::end();
-		return;
-	}
-
-	m_profiler.start();
-
 	// Check for frame resource status here because it is possible for an async flip to happen between begin/end
+	// This runs before any texture upload of the current draw is recorded
 	if (m_current_frame->flags & frame_context_state::dirty) [[unlikely]]
 	{
 		RSX_PROF_SCOPE(present_check);
@@ -1420,26 +1397,37 @@ void VKGSRender::end()
 		m_current_frame->flags &= ~frame_context_state::dirty;
 	}
 
-	analyse_current_rsx_pipeline();
+	invalidated_programs = load_texture_env();
+	return true;
+}
 
-	m_frame_stats.setup_time += m_profiler.duration();
+bool VKGSRender::end_draw()
+{
+	// begin_draw() carries a scope and end_draw() did not, so every per-draw cost here fell
+	// through to fifo_decode -- which is the ENCLOSING scope of the whole RSX loop, not a decode
+	// measurement. That is why fifo_decode read as 100% of the RSX thread while the FIFO
+	// itself only accounts for a couple of milliseconds.
+	RSX_PROF_SCOPE(draw_setup);
 
-	load_texture_env();
-	m_frame_stats.textures_upload_time += m_profiler.duration();
+	if (m_frame_dump.active) [[unlikely]]
+	{
+		m_frame_dump.draws++;
+	}
+
+	// Groups changed since the last executed draw. Loading an interpreter program adds both programs.
+	m_interpreter_state = m_ctx->draw_state.dirty;
 
 	if (!load_program())
 	{
 		// Program is not ready, skip drawing this
 		std::this_thread::yield();
-		execute_nop_draw();
-		// m_rtts.on_write(); - breaks games for obvious reasons
-		rsx::thread::end();
-		return;
+		// res()->surface_cache.on_write(); - breaks games for obvious reasons
+		return false;
 	}
 
 	// Load program execution environment
 	load_program_env();
-	m_frame_stats.setup_time += m_profiler.duration();
+	m_ctx->stats.setup_time += m_profiler.duration();
 
 	// Apply write memory barriers
 	{
@@ -1447,11 +1435,11 @@ void VKGSRender::end()
 		// is the most expensive thing available. Unscoped it read as flat per-draw setup cost.
 		RSX_PROF_SCOPE(wr_barrier);
 
-		if (auto ds = std::get<1>(m_rtts.m_bound_depth_stencil))
+		if (auto ds = std::get<1>(res()->surface_cache.m_bound_depth_stencil))
 		{
 			ds->write_barrier(*m_current_command_buffer);
 
-			if (m_graphics_state.test(rsx::zeta_address_cyclic_barrier) &&
+			if (m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::depth_cyclic_barrier) &&
 				ds->current_layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
 			{
 				// We actually need to end the subpass as a minimum. Without this, early-Z optimiazations in following draws will clobber reads from previous draws and cause flickering.
@@ -1464,18 +1452,16 @@ void VKGSRender::end()
 			}
 		}
 
-		for (auto &rtt : m_rtts.m_bound_render_targets)
+		for (auto &rtt : res()->surface_cache.m_bound_render_targets)
 		{
 			if (auto surface = std::get<1>(rtt))
 			{
 				surface->write_barrier(*m_current_command_buffer);
 			}
 		}
-
-		m_graphics_state.clear(rsx::zeta_address_cyclic_barrier);
 	}
 
-	m_frame_stats.setup_time += m_profiler.duration();
+	m_ctx->stats.setup_time += m_profiler.duration();
 
 	// Now bind the shader resources. It is important that this takes place after the barriers so that we don't end up with stale descriptors
 	for (int retry = 0; retry < 3; ++retry)
@@ -1485,12 +1471,8 @@ void VKGSRender::end()
 			// Reload texture env if referenced objects were invalidated during OOM handling.
 			load_texture_env();
 
-			// Do not trust fragment/vertex texture state after a texture state reset.
 			// NOTE: We don't want to change the program - it's too late for that now. We just need to harmonize the state.
-			m_graphics_state |= rsx::vertex_program_state_dirty | rsx::fragment_program_state_dirty;
-			get_current_fragment_program(fs_sampler_state);
-			get_current_vertex_program(vs_sampler_state);
-			m_graphics_state.clear(rsx::pipeline_state::invalidate_pipeline_bits);
+			RSX(m_ctx)->core().refresh_program_state();
 		}
 
 		const bool out_of_memory = m_shader_interpreter.is_interpreter(m_program)
@@ -1512,20 +1494,23 @@ void VKGSRender::end()
 
 	{
 		RSX_PROF_SCOPE(tex_release);
-		m_texture_cache.release_uncached_temporary_subresources();
+		res()->texture_cache.release_uncached_temporary_subresources();
 	}
 
-	m_frame_stats.textures_upload_time += m_profiler.duration();
+	m_ctx->stats.textures_upload_time += m_profiler.duration();
 
 	u32 sub_index = 0;               // RSX subdraw ID
 	m_current_draw.subdraw_id = 0;   // Host subdraw ID. Invalid RSX subdraws do not increment this value
 
-	if (m_graphics_state & rsx::pipeline_state::invalidate_vk_dynamic_state)
+	// Scissor changes request the reload themselves when they are applied (set_scissor)
+	if (m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::raster) ||
+		m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::depth_stencil) ||
+		m_ctx->draw_state.dirty.test(rsx::draw_state_t::group::viewport))
 	{
 		m_current_command_buffer->flags |= vk::command_buffer::cb_reload_dynamic_state;
 	}
 
-	auto& draw_call = rsx::method_registers.current_draw_clause;
+	auto& draw_call = REGS(m_ctx)->current_draw_clause;
 	draw_call.begin();
 	do
 	{
@@ -1549,8 +1534,8 @@ void VKGSRender::end()
 		// Touches every bound surface and can queue cache invalidations, so it is per-draw
 		// work in the same class as the write barriers rather than bookkeeping.
 		RSX_PROF_SCOPE(rtt_write);
-		m_rtts.on_write(m_framebuffer_layout.color_write_enabled, m_framebuffer_layout.zeta_write_enabled);
+		res()->surface_cache.on_write(m_ctx->fb.layout.color_write_enabled, m_ctx->fb.layout.zeta_write_enabled);
 	}
 
-	rsx::thread::end();
+	return true;
 }

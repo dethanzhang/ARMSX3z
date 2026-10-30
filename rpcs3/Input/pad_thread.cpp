@@ -756,7 +756,7 @@ void pad_thread::operator()()
 			static u64 s_last_change_us = 0;
 
 			const u64 now = get_system_time();
-			const u64 idx = rsxthr->int_flip_index;
+			const u64 idx = rsxthr->display_ctrl().get_flip_index();
 
 			if (idx != s_last_flip_index)
 			{
@@ -1040,4 +1040,19 @@ void pad_thread::open_home_menu()
 
 		(result ? input_log.error : input_log.notice)("opened home menu with result %d", s32{result});
 	}
+}
+
+void pad_thread::set_target_window(void* window)
+{
+	m_curwindow = window;
+
+#ifndef ANDROID
+	for (const auto& [type, handler] : m_handlers)
+	{
+		if (type == pad_handler::keyboard)
+		{
+			static_cast<keyboard_pad_handler*>(handler.get())->SetTargetWindow(static_cast<QWindow*>(window));
+		}
+	}
+#endif
 }

@@ -3,7 +3,12 @@
 
 #ifdef RSX_GLES
 
+#include "util/asm.hpp"
+
 #include <cstring>
+#include <mutex>
+#include <optional>
+#include <unordered_set>
 #include <vector>
 
 #include <dlfcn.h>
@@ -33,6 +38,14 @@ namespace gl::es
 
 	static bool s_loaded = false;
 
+	// User clip planes need EXT_clip_cull_distance, which ANGLE does not have here
+	static bool s_has_clip_distance = false;
+
+	static bool is_unsupported_clip_distance(GLenum cap)
+	{
+		return !s_has_clip_distance && cap >= GL_CLIP_DISTANCE0 && cap < GL_CLIP_DISTANCE0 + 8;
+	}
+
 	// Defined at the bottom: swaps four core entry points for argument-filtering
 	// wrappers. See the "Filtered forwards" section.
 	static void install_filters();
@@ -58,21 +71,6 @@ namespace gl::es
 		GL_ES_CORE_PROCS
 #undef GL_ES_PROC
 
-		// Extensions. Absence is expected and handled; it is only the core table
-		// that has to be complete.
-		p_glBufferStorageEXT = reinterpret_cast<PFNGLBUFFERSTORAGEEXTPROC>(loader("glBufferStorageEXT"));
-
-		// EXT and OES spell texture views identically apart from the suffix.
-		p_glTextureViewEXT = reinterpret_cast<PFNGLTEXTUREVIEWEXTPROC>(loader("glTextureViewEXT"));
-		if (!p_glTextureViewEXT)
-		{
-			p_glTextureViewEXT = reinterpret_cast<PFNGLTEXTUREVIEWEXTPROC>(loader("glTextureViewOES"));
-		}
-
-		p_glMultiDrawArraysEXT = reinterpret_cast<PFNGLMULTIDRAWARRAYSEXTPROC>(loader("glMultiDrawArraysEXT"));
-		p_glMultiDrawElementsEXT = reinterpret_cast<PFNGLMULTIDRAWELEMENTSEXTPROC>(loader("glMultiDrawElementsEXT"));
-		glInsertEventMarkerEXT = reinterpret_cast<PFNGLINSERTEVENTMARKEREXTPROC>(loader("glInsertEventMarkerEXT"));
-
 		if (!missing.empty())
 		{
 			// Not an ES 3.2 implementation. Say exactly what is absent rather than
@@ -85,6 +83,42 @@ namespace gl::es
 
 			return false;
 		}
+
+		// Extensions, taken only when the driver lists them; absence is expected and handled.
+		// Android answers a lookup for any name in the Khronos headers whether the driver has it
+		// or not, and calling one it lacks does nothing but print "called unimplemented OpenGL ES
+		// API" to logcat. Adreno has texture views only as OES and no multi-draw at all, so asking
+		// for the EXT names sent every texture view and every multi-draw down that hole.
+		std::unordered_set<std::string> extensions;
+		GLint extension_count = 0;
+		glGetIntegerv(GL_NUM_EXTENSIONS, &extension_count);
+
+		for (GLint i = 0; i < extension_count; ++i)
+		{
+			if (const auto name = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i)))
+			{
+				extensions.emplace(name);
+			}
+		}
+
+		const auto load_if = [&](const char* extension, const char* name)
+		{
+			return extensions.contains(extension) ? loader(name) : nullptr;
+		};
+
+		p_glBufferStorageEXT = reinterpret_cast<PFNGLBUFFERSTORAGEEXTPROC>(load_if("GL_EXT_buffer_storage", "glBufferStorageEXT"));
+
+		// OES and EXT spell texture views identically apart from the suffix
+		p_glTextureViewEXT = reinterpret_cast<PFNGLTEXTUREVIEWEXTPROC>(load_if("GL_OES_texture_view", "glTextureViewOES"));
+		if (!p_glTextureViewEXT)
+		{
+			p_glTextureViewEXT = reinterpret_cast<PFNGLTEXTUREVIEWEXTPROC>(load_if("GL_EXT_texture_view", "glTextureViewEXT"));
+		}
+
+		p_glMultiDrawArraysEXT = reinterpret_cast<PFNGLMULTIDRAWARRAYSEXTPROC>(load_if("GL_EXT_multi_draw_arrays", "glMultiDrawArraysEXT"));
+		p_glMultiDrawElementsEXT = reinterpret_cast<PFNGLMULTIDRAWELEMENTSEXTPROC>(load_if("GL_EXT_multi_draw_arrays", "glMultiDrawElementsEXT"));
+		glInsertEventMarkerEXT = reinterpret_cast<PFNGLINSERTEVENTMARKEREXTPROC>(load_if("GL_EXT_debug_marker", "glInsertEventMarkerEXT"));
+		s_has_clip_distance = extensions.contains("GL_EXT_clip_cull_distance");
 
 		install_filters();
 
@@ -819,11 +853,19 @@ namespace gl::es
 	// ---------------------------------------------------------------------
 
 	// The driver's real entry points, saved before the filters replace them.
-	static PFN_glPixelStorei    raw_glPixelStorei = nullptr;
-	static PFN_glEnable         raw_glEnable = nullptr;
-	static PFN_glDisable        raw_glDisable = nullptr;
-	static PFN_glTexParameteriv raw_glTexParameteriv = nullptr;
-	static PFN_glBindTexture    raw_glBindTexture = nullptr;
+	static PFN_glPixelStorei       raw_glPixelStorei = nullptr;
+	static PFN_glEnable            raw_glEnable = nullptr;
+	static PFN_glDisable           raw_glDisable = nullptr;
+	static PFN_glTexParameteri     raw_glTexParameteri = nullptr;
+	static PFN_glTexParameteriv    raw_glTexParameteriv = nullptr;
+	static PFN_glTexParameterf     raw_glTexParameterf = nullptr;
+	static PFN_glTexParameterfv    raw_glTexParameterfv = nullptr;
+	static PFN_glSamplerParameterf raw_glSamplerParameterf = nullptr;
+	static PFN_glBindTexture       raw_glBindTexture = nullptr;
+	static PFN_glTexSubImage2D     raw_glTexSubImage2D = nullptr;
+	static PFN_glTexSubImage3D     raw_glTexSubImage3D = nullptr;
+	static PFN_glCopyImageSubData  raw_glCopyImageSubData = nullptr;
+	static PFN_glGetTexLevelParameteriv raw_glGetTexLevelParameteriv = nullptr;
 
 	// GL_TEXTURE_1D reaches the driver from three directions - texture creation,
 	// the per-draw sampler binding, and GLGSRender's null-texture setup - and ES
@@ -893,7 +935,10 @@ namespace gl::es
 			return;
 		}
 		default:
-			raw_glEnable(cap);
+			if (!is_unsupported_clip_distance(cap))
+			{
+				raw_glEnable(cap);
+			}
 			return;
 		}
 	}
@@ -916,8 +961,56 @@ namespace gl::es
 		case GL_SAMPLE_ALPHA_TO_ONE:
 			return;
 		default:
-			raw_glDisable(cap);
+			if (!is_unsupported_clip_distance(cap))
+			{
+				raw_glDisable(cap);
+			}
 			return;
+		}
+	}
+
+	// ES has no LOD bias, on textures or on samplers. RPCS3 sets it on every sampler it makes,
+	// nearly always to zero, which is what ES does anyway. A game that asks for another value
+	// gets zero, which makes its textures a little sharper or blurrier than intended.
+	static bool drop_lod_bias(GLenum pname, GLfloat value)
+	{
+		if (pname != GL_TEXTURE_LOD_BIAS)
+		{
+			return false;
+		}
+
+		if (value != 0.f)
+		{
+			static bool warned = false;
+			warn_once(warned, "texture LOD bias");
+		}
+
+		return true;
+	}
+
+	// The texture constructor sets its parameters on whatever target it was made for, 1D
+	// included; see filter_BindTexture.
+	static void GL_APIENTRY filter_TexParameteri(GLenum target, GLenum pname, GLint param)
+	{
+		if (!drop_lod_bias(pname, static_cast<GLfloat>(param)))
+		{
+			raw_glTexParameteri(real_texture_target(target), pname, param);
+		}
+	}
+
+	static void GL_APIENTRY filter_TexParameterf(GLenum target, GLenum pname, GLfloat param)
+	{
+		if (!drop_lod_bias(pname, param))
+		{
+			raw_glTexParameterf(real_texture_target(target), pname, param);
+		}
+	}
+
+	static void GL_APIENTRY filter_TexParameterfv(GLenum target, GLenum pname, const GLfloat* params)
+	{
+		if (!drop_lod_bias(pname, params[0]))
+		{
+			raw_glTexParameterfv(real_texture_target(target), pname, params);
 		}
 	}
 
@@ -933,24 +1026,212 @@ namespace gl::es
 			return;
 		}
 
-		raw_glTexParameteriv(target, pname, params);
+		if (!drop_lod_bias(pname, static_cast<GLfloat>(params[0])))
+		{
+			raw_glTexParameteriv(real_texture_target(target), pname, params);
+		}
 	}
 
-	// Swap the four filters in over the raw driver pointers. Called at the end of
+	static void GL_APIENTRY filter_SamplerParameterf(GLuint sampler, GLenum pname, GLfloat param)
+	{
+		if (!drop_lod_bias(pname, param))
+		{
+			raw_glSamplerParameterf(sampler, pname, param);
+		}
+	}
+
+	// The texture constructor works out a pitch from the channel sizes it asks for here. For a 1D
+	// texture the driver refused the question, and the pitch came from uninitialised values.
+	static void GL_APIENTRY filter_GetTexLevelParameteriv(GLenum target, GLint level, GLenum pname, GLint* params)
+	{
+		raw_glGetTexLevelParameteriv(real_texture_target(target), level, pname, params);
+	}
+
+	static void GL_APIENTRY filter_CopyImageSubData(GLuint src, GLenum src_target, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
+		GLuint dst, GLenum dst_target, GLint dst_level, GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height, GLsizei depth)
+	{
+		raw_glCopyImageSubData(src, real_texture_target(src_target), src_level, src_x, src_y, src_z,
+			dst, real_texture_target(dst_target), dst_level, dst_x, dst_y, dst_z, width, height, depth);
+	}
+
+	// Desktop GL takes a texel as one packed 32-bit word (GL_UNSIGNED_INT_8_8_8_8 and _REV) and
+	// in blue-first order (GL_BGRA); ES takes neither, only bytes in R, G, B, A order. RPCS3
+	// uploads its null textures, the overlay images and frames the game drew on the CPU that way,
+	// so the driver refused them and they stayed empty. They are put in byte order here instead,
+	// which leaves the texture holding exactly what a desktop driver would have stored.
+	struct texel_bytes
+	{
+		// Where each channel sits within the four bytes of a source texel
+		u8 r, g, b, a;
+	};
+
+	static std::optional<texel_bytes> desktop_texel_layout(GLenum format, GLenum type)
+	{
+		// The host is little-endian: a packed word's low byte comes first in memory
+		switch (format)
+		{
+		case GL_RGBA:
+			switch (type)
+			{
+			case GL_UNSIGNED_INT_8_8_8_8: return texel_bytes{ 3, 2, 1, 0 };
+			case GL_UNSIGNED_INT_8_8_8_8_REV: return texel_bytes{ 0, 1, 2, 3 };
+			default: return std::nullopt;
+			}
+		case GL_BGRA:
+			switch (type)
+			{
+			case GL_UNSIGNED_BYTE:
+			case GL_UNSIGNED_INT_8_8_8_8_REV: return texel_bytes{ 2, 1, 0, 3 };
+			case GL_UNSIGNED_INT_8_8_8_8: return texel_bytes{ 1, 2, 3, 0 };
+			default: return std::nullopt;
+			}
+		default:
+			return std::nullopt;
+		}
+	}
+
+	// Reads the source the way the unpack state describes it and writes it out tightly packed,
+	// one R, G, B, A texel after another. Nullopt when the source is in a pixel buffer, which
+	// would have to be mapped first: none of the uploads above use one.
+	static std::optional<std::vector<u8>> repack_texels(const void* pixels, GLsizei width, GLsizei height, GLsizei depth, texel_bytes layout)
+	{
+		GLint unpack_buffer = 0;
+		glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack_buffer);
+
+		if (unpack_buffer || !pixels)
+		{
+			static bool reported = false;
+			if (!std::exchange(reported, true))
+			{
+				rsx_log.error("GLES: an upload from a pixel buffer is in a desktop-only pixel format and was not converted.");
+			}
+			return std::nullopt;
+		}
+
+		GLint row_length = 0, image_height = 0, skip_pixels = 0, skip_rows = 0, skip_images = 0, alignment = 4;
+		glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+		glGetIntegerv(GL_UNPACK_IMAGE_HEIGHT, &image_height);
+		glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skip_pixels);
+		glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skip_rows);
+		glGetIntegerv(GL_UNPACK_SKIP_IMAGES, &skip_images);
+		glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+
+		const usz row_pitch = utils::align<usz>(usz(row_length > 0 ? row_length : width) * 4, std::max(alignment, 1));
+		const usz image_pitch = row_pitch * usz(image_height > 0 ? image_height : height);
+		const u8* src = static_cast<const u8*>(pixels) + skip_images * image_pitch + skip_rows * row_pitch + skip_pixels * 4;
+
+		std::vector<u8> texels(usz(width) * height * depth * 4);
+		u8* dst = texels.data();
+
+		for (GLsizei z = 0; z < depth; ++z)
+		{
+			for (GLsizei y = 0; y < height; ++y)
+			{
+				const u8* row = src + z * image_pitch + y * row_pitch;
+
+				for (GLsizei x = 0; x < width; ++x, dst += 4)
+				{
+					const u8* texel = row + x * 4;
+					dst[0] = texel[layout.r];
+					dst[1] = texel[layout.g];
+					dst[2] = texel[layout.b];
+					dst[3] = texel[layout.a];
+				}
+			}
+		}
+
+		return texels;
+	}
+
+	// The repacked texels are tight, so the caller's row length, skips and alignment are set
+	// aside for the upload.
+	struct scoped_tight_unpack
+	{
+		static constexpr GLenum k_state[] = { GL_UNPACK_ROW_LENGTH, GL_UNPACK_IMAGE_HEIGHT, GL_UNPACK_SKIP_PIXELS,
+			GL_UNPACK_SKIP_ROWS, GL_UNPACK_SKIP_IMAGES, GL_UNPACK_ALIGNMENT };
+		GLint m_saved[std::size(k_state)]{};
+
+		scoped_tight_unpack()
+		{
+			for (usz i = 0; i < std::size(k_state); ++i)
+			{
+				glGetIntegerv(k_state[i], &m_saved[i]);
+				raw_glPixelStorei(k_state[i], k_state[i] == GL_UNPACK_ALIGNMENT ? 4 : 0);
+			}
+		}
+
+		~scoped_tight_unpack()
+		{
+			for (usz i = 0; i < std::size(k_state); ++i)
+			{
+				raw_glPixelStorei(k_state[i], m_saved[i]);
+			}
+		}
+	};
+
+	static void GL_APIENTRY filter_TexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height,
+		GLenum format, GLenum type, const void* pixels)
+	{
+		if (const auto layout = desktop_texel_layout(format, type))
+		{
+			if (const auto texels = repack_texels(pixels, width, height, 1, *layout))
+			{
+				const scoped_tight_unpack tight;
+				raw_glTexSubImage2D(target, level, xoffset, yoffset, width, height, GL_RGBA, GL_UNSIGNED_BYTE, texels->data());
+				return;
+			}
+		}
+
+		raw_glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+	}
+
+	static void GL_APIENTRY filter_TexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+		GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels)
+	{
+		if (const auto layout = desktop_texel_layout(format, type))
+		{
+			if (const auto texels = repack_texels(pixels, width, height, depth, *layout))
+			{
+				const scoped_tight_unpack tight;
+				raw_glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, GL_RGBA, GL_UNSIGNED_BYTE, texels->data());
+				return;
+			}
+		}
+
+		raw_glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels);
+	}
+
+	// Swap the filters in over the raw driver pointers. Called at the end of
 	// load_procs, after the generic loop has populated the table.
 	static void install_filters()
 	{
 		raw_glPixelStorei = ::glPixelStorei;
 		raw_glEnable = ::glEnable;
 		raw_glDisable = ::glDisable;
+		raw_glTexParameteri = ::glTexParameteri;
 		raw_glTexParameteriv = ::glTexParameteriv;
+		raw_glTexParameterf = ::glTexParameterf;
+		raw_glTexParameterfv = ::glTexParameterfv;
+		raw_glSamplerParameterf = ::glSamplerParameterf;
 		raw_glBindTexture = ::glBindTexture;
+		raw_glTexSubImage2D = ::glTexSubImage2D;
+		raw_glTexSubImage3D = ::glTexSubImage3D;
+		raw_glCopyImageSubData = ::glCopyImageSubData;
+		raw_glGetTexLevelParameteriv = ::glGetTexLevelParameteriv;
 
 		::glPixelStorei = &filter_PixelStorei;
 		::glEnable = &filter_Enable;
 		::glDisable = &filter_Disable;
+		::glTexParameteri = &filter_TexParameteri;
 		::glTexParameteriv = &filter_TexParameteriv;
+		::glTexParameterf = &filter_TexParameterf;
+		::glTexParameterfv = &filter_TexParameterfv;
+		::glSamplerParameterf = &filter_SamplerParameterf;
 		::glBindTexture = &filter_BindTexture;
+		::glTexSubImage2D = &filter_TexSubImage2D;
+		::glTexSubImage3D = &filter_TexSubImage3D;
+		::glCopyImageSubData = &filter_CopyImageSubData;
+		::glGetTexLevelParameteriv = &filter_GetTexLevelParameteriv;
 	}
 }
 
@@ -971,11 +1252,24 @@ namespace gl::es
 		EGLConfig s_config = nullptr;
 		EGLSurface s_surface = EGL_NO_SURFACE;
 
+		// What the surface was made for, so present_window can tell when Android replaced the
+		// window. umax: made by make_current, which has no epoch; the next present adopts it.
+		void* s_surface_window = nullptr;
+		u64 s_surface_epoch = umax;
+
+		// Contexts made and not yet destroyed. The window is let go with the last one, and a
+		// different EGL library can only be loaded while there are none.
+		u32 s_live_contexts = 0;
+
+		// The ANGLE library egl_initialize was asked for, empty for the system driver.
+		std::string s_requested_angle;
+
 		// Only the entry points we actually need. Resolved with dlsym on whichever
 		// libEGL we opened - NOT with eglGetProcAddress, which we cannot call yet.
 		PFNEGLGETPROCADDRESSPROC      p_eglGetProcAddress = nullptr;
 		PFNEGLGETDISPLAYPROC          p_eglGetDisplay = nullptr;
 		PFNEGLINITIALIZEPROC          p_eglInitialize = nullptr;
+		PFNEGLTERMINATEPROC           p_eglTerminate = nullptr;
 		PFNEGLCHOOSECONFIGPROC        p_eglChooseConfig = nullptr;
 		PFNEGLCREATECONTEXTPROC       p_eglCreateContext = nullptr;
 		PFNEGLDESTROYCONTEXTPROC      p_eglDestroyContext = nullptr;
@@ -1006,6 +1300,28 @@ namespace gl::es
 			const auto slash = path.find_last_of('/');
 			return (slash == std::string::npos) ? std::string() : path.substr(0, slash);
 		}
+
+		// Unbind this thread's context and destroy the window surface, which lets the window go.
+		// An ANativeWindow takes one producer at a time: a surface left on it keeps a Vulkan
+		// swapchain, or the next game's surface, from attaching.
+		void release_surface()
+		{
+			if (s_display == EGL_NO_DISPLAY)
+			{
+				return;
+			}
+
+			p_eglMakeCurrent(s_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+
+			if (s_surface != EGL_NO_SURFACE)
+			{
+				p_eglDestroySurface(s_display, s_surface);
+				s_surface = EGL_NO_SURFACE;
+			}
+
+			s_surface_window = nullptr;
+			s_surface_epoch = umax;
+		}
 	}
 
 	gl_backend active_backend()
@@ -1015,19 +1331,54 @@ namespace gl::es
 
 	gl_backend egl_initialize()
 	{
+		const char* const angle_egl = std::getenv("ARMSX3_ANGLE_EGL_LIBRARY");
+		const std::string requested = (angle_egl && *angle_egl) ? angle_egl : "";
+
 		if (s_egl_ready)
 		{
-			return s_backend;
+			// ANGLE or the system driver is picked per game (MainActivityRuntime.applyAngleEnv), and
+			// Apply & Restart boots the next game in this same process, so a changed pick has to be
+			// able to take over. Only once nothing made with the current library is alive.
+			if (requested == s_requested_angle)
+			{
+				return s_backend;
+			}
+
+			if (s_live_contexts)
+			{
+				// Said out loud: otherwise the game simply runs on the driver the player turned off
+				rsx_log.warning("GLES: %s was picked, but %u context(s) of the current driver are still alive, so it stays in use",
+					requested.empty() ? "The system driver" : "ANGLE", s_live_contexts);
+				return s_backend;
+			}
+
+			release_surface();
+
+			if (s_display != EGL_NO_DISPLAY)
+			{
+				p_eglTerminate(s_display);
+				s_display = EGL_NO_DISPLAY;
+			}
+
+			// Both libraries stay loaded: a driver is not something to unload, and an idle one
+			// costs nothing. Their handles are just no longer the ones in use.
+			s_config = nullptr;
+			s_egl_handle = nullptr;
+			s_gles_handle = nullptr;
+			s_egl_ready = false;
+			rsx_log.notice("GLES: switching to %s", requested.empty() ? "the system driver" : "ANGLE");
 		}
 
+		s_requested_angle = requested;
+
 		// ANGLE first, if the app asked for it.
-		if (const char* angle_egl = std::getenv("ARMSX3_ANGLE_EGL_LIBRARY"); angle_egl && *angle_egl)
+		if (!requested.empty())
 		{
-			s_egl_handle = dlopen(angle_egl, RTLD_NOW | RTLD_LOCAL);
+			s_egl_handle = dlopen(requested.c_str(), RTLD_NOW | RTLD_LOCAL);
 			if (s_egl_handle)
 			{
 				s_backend = gl_backend::angle;
-				rsx_log.success("GLES: using ANGLE from %s", angle_egl);
+				rsx_log.success("GLES: using ANGLE from %s", requested);
 
 				// ANGLE's GLESv2 sits next to its EGL. Prefer the explicit override,
 				// then the sibling path, so we never accidentally resolve GL entry
@@ -1035,7 +1386,7 @@ namespace gl::es
 				const char* angle_gles = std::getenv("ARMSX3_ANGLE_GLES_LIBRARY");
 				const std::string gles_path = (angle_gles && *angle_gles)
 					? std::string(angle_gles)
-					: dirname_of(angle_egl) + "/libGLESv2_angle.so";
+					: dirname_of(requested) + "/libGLESv2_angle.so";
 
 				s_gles_handle = dlopen(gles_path.c_str(), RTLD_NOW | RTLD_LOCAL);
 				if (!s_gles_handle)
@@ -1047,7 +1398,7 @@ namespace gl::es
 			{
 				// Loud on purpose. A silent fall back to the system driver here is
 				// indistinguishable from "ANGLE is broken" in a user's bug report.
-				rsx_log.error("GLES: ANGLE was requested but %s could not be loaded (%s). Falling back to the system GLES driver.", angle_egl, dlerror());
+				rsx_log.error("GLES: ANGLE was requested but %s could not be loaded (%s). Falling back to the system GLES driver.", requested, dlerror());
 			}
 		}
 
@@ -1077,6 +1428,7 @@ namespace gl::es
 			resolve(s_egl_handle, p_eglGetProcAddress, "eglGetProcAddress") &&
 			resolve(s_egl_handle, p_eglGetDisplay, "eglGetDisplay") &&
 			resolve(s_egl_handle, p_eglInitialize, "eglInitialize") &&
+			resolve(s_egl_handle, p_eglTerminate, "eglTerminate") &&
 			resolve(s_egl_handle, p_eglChooseConfig, "eglChooseConfig") &&
 			resolve(s_egl_handle, p_eglCreateContext, "eglCreateContext") &&
 			resolve(s_egl_handle, p_eglDestroyContext, "eglDestroyContext") &&
@@ -1178,6 +1530,7 @@ namespace gl::es
 			{
 				rsx_log.success("GLES: created an OpenGL ES 3.%d context (%s)", minor,
 					s_backend == gl_backend::angle ? "ANGLE" : "system driver");
+				s_live_contexts++;
 				return ctx;
 			}
 		}
@@ -1192,6 +1545,13 @@ namespace gl::es
 		if (s_egl_ready && context)
 		{
 			p_eglDestroyContext(s_display, static_cast<EGLContext>(context));
+
+			// The last one goes with the renderer: let the window go too, for a Vulkan swapchain or
+			// for the next game's surface
+			if (s_live_contexts && --s_live_contexts == 0)
+			{
+				release_surface();
+			}
 		}
 	}
 
@@ -1208,10 +1568,23 @@ namespace gl::es
 			return true;
 		}
 
-		// One window surface, shared by every context. RPCS3 makes an extra
-		// context per async shader-compiler thread, but those never present - they
-		// only need a current context to compile against.
-		if (s_surface == EGL_NO_SURFACE && native_window)
+		// No window: a shader-compiler thread, one of the extra contexts RPCS3 makes. It never
+		// presents and only needs a current context to compile against. It cannot have the window
+		// surface either: a surface is current on one thread at a time, and the render thread holds
+		// it (EGL_BAD_ACCESS). So it runs without one (EGL_KHR_surfaceless_context).
+		if (!native_window)
+		{
+			if (!p_eglMakeCurrent(s_display, EGL_NO_SURFACE, EGL_NO_SURFACE, static_cast<EGLContext>(context)))
+			{
+				rsx_log.fatal("GLES: eglMakeCurrent without a surface failed (0x%x)", p_eglGetError());
+				return false;
+			}
+
+			return true;
+		}
+
+		// The one window surface, for the render thread
+		if (s_surface == EGL_NO_SURFACE)
 		{
 			s_surface = p_eglCreateWindowSurface(s_display, s_config,
 				static_cast<EGLNativeWindowType>(native_window), nullptr);
@@ -1221,6 +1594,9 @@ namespace gl::es
 				rsx_log.fatal("GLES: eglCreateWindowSurface failed (0x%x)", p_eglGetError());
 				return false;
 			}
+
+			s_surface_window = native_window;
+			s_surface_epoch = umax;
 		}
 
 		if (!p_eglMakeCurrent(s_display, s_surface, s_surface, static_cast<EGLContext>(context)))
@@ -1229,6 +1605,39 @@ namespace gl::es
 			return false;
 		}
 
+		return true;
+	}
+
+	bool present_window(void* context, void* native_window, u64 epoch)
+	{
+		if (!s_egl_ready || !context || !native_window)
+		{
+			return false;
+		}
+
+		if (s_surface != EGL_NO_SURFACE)
+		{
+			// Made by make_current, which has no epoch to give it
+			if (s_surface_epoch == umax && s_surface_window == native_window)
+			{
+				s_surface_epoch = epoch;
+			}
+
+			if (s_surface_window == native_window && s_surface_epoch == epoch)
+			{
+				return true;
+			}
+
+			rsx_log.notice("GLES: the window was replaced, making a new surface for it");
+			release_surface();
+		}
+
+		if (!make_current(context, native_window))
+		{
+			return false;
+		}
+
+		s_surface_epoch = epoch;
 		return true;
 	}
 
@@ -1246,6 +1655,66 @@ namespace gl::es
 		{
 			p_eglSwapInterval(s_display, interval);
 		}
+	}
+
+	namespace
+	{
+		void GL_APIENTRY report_error(GLenum /*source*/, GLenum /*type*/, GLuint id, GLenum /*severity*/,
+			GLsizei /*length*/, const GLchar* message, const void* /*user*/)
+		{
+			// A bad call usually repeats every draw. Each different complaint is logged a few
+			// times and then only counted, so one that turns up later is not lost behind it.
+			// Driver threads can call this too.
+			static std::mutex s_mutex;
+			static std::unordered_map<std::string, u32> s_seen;
+
+			const std::string text = message ? message : "";
+			u32 count = 0;
+			{
+				std::lock_guard lock(s_mutex);
+
+				// Drivers can put changing numbers in a message; past this many, stop remembering
+				if (const auto found = s_seen.find(text); found != s_seen.end())
+				{
+					count = ++found->second;
+				}
+				else if (s_seen.size() < 256)
+				{
+					s_seen.emplace(text, 1);
+					count = 1;
+				}
+			}
+
+			if (count && count <= 3)
+			{
+				rsx_log.error("GLES: the driver rejected a call (0x%x): %s", id, text);
+			}
+			else if (count && (count & (count - 1)) == 0)
+			{
+				rsx_log.error("GLES: the driver rejected the same call %u times: %s", count, text);
+			}
+		}
+	}
+
+	void enable_error_reporting()
+	{
+		GLint units = 0, fragment_units = 0, vertex_units = 0;
+		glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &units);
+		glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &fragment_units);
+		glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertex_units);
+		rsx_log.notice("GLES: %d texture units (%d fragment, %d vertex), texture views %s", units, fragment_units,
+			vertex_units, p_glTextureViewEXT ? "available" : "emulated (the driver has none)");
+
+		if (!glDebugMessageCallback || !glDebugMessageControl)
+		{
+			rsx_log.warning("GLES: the driver has no debug output, so rejected calls go unreported");
+			return;
+		}
+
+		glEnable(GL_DEBUG_OUTPUT);
+		glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_FALSE);
+		glDebugMessageControl(GL_DONT_CARE, GL_DEBUG_TYPE_ERROR, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+		glDebugMessageCallback(&report_error, nullptr);
 	}
 }
 

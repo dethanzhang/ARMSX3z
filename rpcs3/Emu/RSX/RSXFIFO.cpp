@@ -111,6 +111,16 @@ namespace rsx
 			m_next_cmd_entry = position + count * 4;
 		}
 
+		void FIFO_control::set_channel(RsxDmaControl* ctrl)
+		{
+			invalidate_cache();
+
+			m_ctrl = ctrl;
+			m_memwatch_addr = 0;
+			m_memwatch_cmp = 0;
+			m_remaining_commands = 0;
+		}
+
 		void FIFO_control::inc_get(bool wait)
 		{
 			m_fifo_pos += 4;
@@ -122,7 +132,8 @@ namespace rsx
 				sync_get_force();
 				invalidate_cache();
 
-				while (read_put() == m_fifo_pos && !Emu.IsStopped())
+				// NOTE: lv2 waits for a freed context to go away, which only happens once this command returns
+				while (read_put() == m_fifo_pos && !Emu.IsStopped() && !m_thread->get_context()->fw.free_requested)
 				{
 					m_thread->cpu_wait({});
 				}
@@ -1135,13 +1146,13 @@ namespace rsx
 				case FIFO::EMIT_END:
 				{
 					// Emit end command to close existing scope
-					AUDIT(in_begin_end);
+					AUDIT(m_ctx->in_begin_end);
 					methods[NV4097_SET_BEGIN_END](m_ctx, NV4097_SET_BEGIN_END, 0);
 					break;
 				}
 				case FIFO::EMIT_BARRIER:
 				{
-					AUDIT(in_begin_end);
+					AUDIT(m_ctx->in_begin_end);
 					methods[NV4097_SET_BEGIN_END](m_ctx, NV4097_SET_BEGIN_END, 0);
 					methods[NV4097_SET_BEGIN_END](m_ctx, NV4097_SET_BEGIN_END, m_flattener.get_primitive());
 					break;
@@ -1171,6 +1182,13 @@ namespace rsx
 				// packet, so it prices packets.
 				rsx::prof::g_fifo_dispatches++;
 				rsx::prof::g_method_counts[reg & (rsx::prof::method_slot_count - 1)]++;
+			}
+
+			const bool value_changed = m_ctx->register_state->latch != value;
+			if (value_changed)
+			{
+				// Mark the decoded draw state that depends on this register. Applies to method registers too.
+				m_ctx->draw_state.pending |= draw_state_signals[reg];
 			}
 
 			if (auto method = methods[reg])
@@ -1205,10 +1223,10 @@ namespace rsx
 					break;
 				}
 			}
-			else if (m_ctx->register_state->latch != value)
+			else if (value_changed)
 			{
 				// Something changed, set signal flags if any specified
-				m_graphics_state |= state_signals[reg];
+				m_ctx->graphics_state |= state_signals[reg];
 			}
 		}
 		while (fifo_ctrl->read_unsafe(command));

@@ -87,6 +87,7 @@ class RPCSX {
     external fun frameGenShaderError(): String
     external fun getLibraryVersion(path: String): String?
     external fun initialize(rootDir: String, user: String, socInfo: String): Boolean
+    external fun logPreviousExit(line: String)
     external fun installFw(fd: Int, progressId: Long): Boolean
     external fun install(fd: Int, progressId: Long): Boolean
 
@@ -341,6 +342,7 @@ class RPCSX {
     external fun saveStateToSlot(slot: Int): Boolean
     external fun loadStateFromSlot(slot: Int): Boolean
     external fun hasStateInSlot(slot: Int): Boolean
+    external fun isStateSlotReadable(slot: Int): Boolean
     external fun deleteStateFromSlot(slot: Int): Boolean
     external fun patchEngineVersion(): String
     external fun patchesImport(content: String): Int

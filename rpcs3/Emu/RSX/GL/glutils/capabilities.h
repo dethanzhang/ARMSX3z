@@ -45,6 +45,7 @@ namespace gl
 		bool EXT_texture_compression_s3tc_supported = false;
 		bool ARB_shader_storage_buffer_object_supported = false;
 		bool ARB_framebuffer_no_attachments_supported = false;
+		bool ARB_robustness_supported = false;
 
 		bool vendor_INTEL = false;  // has broken GLSL compiler
 		bool vendor_AMD = false;    // has broken ARB_multidraw
@@ -60,4 +61,8 @@ namespace gl
 
 	const capabilities& get_driver_caps();
 	const std::string get_device_name();
+
+	// Forget the capabilities read so far; the next get_driver_caps() reads them from the
+	// current context. For a renderer starting on a different driver than the last one.
+	void reset_driver_caps();
 }

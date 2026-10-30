@@ -646,7 +646,6 @@ namespace rsx
 
 
 	protected:
-
 		/**
 		 * Variable declarations
 		 */
@@ -689,9 +688,6 @@ namespace rsx
 		static const bool invalidation_ignore_unsynchronized = true; // If true, unsynchronized sections don't get forcefully flushed unless they overlap the fault range
 		static const bool invalidation_keep_ro_during_read = true; // If true, RO sections are not invalidated during read faults
 
-
-
-
 		/**
 		 * Virtual Methods
 		 */
@@ -714,6 +710,8 @@ namespace rsx
 		virtual void cleanup_after_dma_transfers(commandbuffer_type&) = 0;
 
 	public:
+		void set_context(rsx::context* ctx) { m_ctx = ctx; }
+
 		virtual void destroy() = 0;
 		virtual bool is_depth_texture(u32, u32) = 0;
 		virtual void on_section_destroyed(section_storage_type& /*section*/)
@@ -721,6 +719,9 @@ namespace rsx
 
 
 	protected:
+		// Owning context. Immutable once set.
+		rsx::context* m_ctx = nullptr;
+
 		/**
 		 * Helpers
 		 */
@@ -813,7 +814,7 @@ namespace rsx
 				else if (surface->get_memory_read_flags() == rsx::memory_read_flags::flush_always)
 				{
 					// This region is set to always read from itself (unavoidable hard sync)
-					const auto ROP_timestamp = rsx::get_current_renderer()->ROP_sync_timestamp;
+					const auto ROP_timestamp = m_ctx->ROP_sync_timestamp;
 					if (ROP_timestamp > surface->get_sync_timestamp())
 					{
 						sections_to_transfer.push_back(surface);
@@ -3074,7 +3075,7 @@ namespace rsx
 
 			image_section_attributes_t attributes{};
 			texture_cache_search_options options{};
-			attributes.address = rsx::get_address(tex.offset(), tex.location());
+			attributes.address = rsx::get_address(m_ctx, tex.offset(), tex.location());
 			attributes.gcm_format = tex.format() & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
 			attributes.bpp = get_format_block_size_in_bytes(attributes.gcm_format);
 			attributes.width = tex.width();
@@ -3316,7 +3317,7 @@ namespace rsx
 			// Do direct upload from CPU as the last resort
 			m_texture_upload_misses_this_frame++;
 
-			const auto subresources_layout = get_subresources_layout(tex);
+			const auto subresources_layout = get_subresources_layout(m_ctx, tex);
 			const auto format_class = classify_format(attributes.gcm_format);
 
 			if (!tex_size)
@@ -3506,6 +3507,7 @@ namespace rsx
 				}
 
 				const auto props = texture_cache_helpers::get_optimal_blit_target_properties(
+					m_ctx,
 					src_is_render_target,
 					dst_range,
 					dst.pitch,

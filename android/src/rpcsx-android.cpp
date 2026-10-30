@@ -40,6 +40,7 @@
 #include "Emu/RSX/rsx_frame_dump.h"
 #include "Emu/RSX/GL/GLGSRender.h"
 #include "Emu/RSX/VK/VKGSRender.h"
+#include "Emu/RSX/Core/RSXRendererFactory.h"
 #include "Emu/savestate_utils.hpp"
 // patch_engine, needed by the precompile path before ppu_load_exec.
 #include "Utilities/bin_patch.h"
@@ -507,6 +508,12 @@ struct GraphicsFrame : GSFrameBase {
 
   void close() override {}
   void reset() override {}
+
+  // Whichever renderer is configured right now, not the one this frame was made for: the frame is
+  // not tied to a backend. Vulkan only takes handle(), and the GL hooks below check the setting
+  // when they run. Answering this way makes a renderer swap reuse the frame through reset()
+  // instead of asking for a replacement, which Android has no second window to provide.
+  video_renderer renderer() const override { return g_cfg.video.renderer; }
   bool shown() override { return true; }
   void hide() override {}
   void show() override {}
@@ -540,7 +547,10 @@ struct GraphicsFrame : GSFrameBase {
 
   void delete_context(draw_context_t ctx) override {
 #ifdef RSX_GLES
-    if (!usingGlRenderer()) {
+    // By the context, not the setting. A swap from GL to Vulkan changes the setting before the
+    // GL backend tears down, and skipping this left its EGL surface connected to the window, where
+    // Vulkan cannot attach a swapchain. On a Vulkan boot ctx is null: make_context never made one.
+    if (!ctx) {
       return;
     }
 
@@ -575,7 +585,9 @@ struct GraphicsFrame : GSFrameBase {
       return;
     }
 
-    gl::es::make_current(ctx, getNativeWindow());
+    // The window only for the primary context, which the render thread presents with. The others
+    // belong to shader-compiler threads, and a window surface cannot be current on two threads.
+    gl::es::make_current(ctx, ctx == primaryGlContext ? getNativeWindow() : nullptr);
 #endif
   }
 
@@ -619,6 +631,13 @@ struct GraphicsFrame : GSFrameBase {
       return;
     }
 
+    // Android replaces the window under a running game (rotation, a trip to the background). The
+    // surface follows it here, at the flip, the way the Vulkan backend rebuilds its swapchain.
+    // A null ctx is the shader-loading dialog's flip, which presents with whatever is current.
+    if (ctx && !gl::es::present_window(ctx, getNativeWindow(), display_epoch())) {
+      return;
+    }
+
     if (!skip_frame) {
       gl::es::swap_buffers();
     }
@@ -630,7 +649,7 @@ private:
   u32 m_frames_since_log = 0;
 
 public:
-  // These two drive the resize check in VKGSRender::flip, so a stale value here does not
+  // These two drive the resize check in VKGSRender::present_frame, so a stale value here does not
   // make the picture late, it makes it wrong: the swapchain keeps the extent it had and
   // the present framebuffer is built to match, whatever shape the window is now.
   //
@@ -2641,24 +2660,10 @@ static void setupCallbacks() {
       // the switch and we do not have to re-list every handler it gains.
       .init_gs_render =
           [](utils::serial *ar) {
-            switch (g_cfg.video.renderer.get()) {
-            case video_renderer::null:
-              g_fxo->init<rsx::thread, named_thread<NullGSRender>>(ar);
-              break;
-            case video_renderer::vulkan:
-              g_fxo->init<rsx::thread, named_thread<VKGSRender>>(ar);
-              break;
-
-            // ARMSX3: the GL backend now targets OpenGL ES 3.2 (see
+            // ARMSX3: the GL backend targets OpenGL ES 3.2 (see
             // Emu/RSX/GL/OpenGL_ES.hpp). It is also the only path that can run on
             // ANGLE, which is why it exists on a Vulkan-capable platform at all.
-            case video_renderer::opengl:
-              g_fxo->init<rsx::thread, named_thread<GLGSRender>>(ar);
-              break;
-
-            default:
-              break;
-            }
+            rsx::create_render_thread(ar);
           },
       .get_audio =
           [](auto...) {
@@ -5261,6 +5266,15 @@ extern "C" bool _rpcsx_loadState(unsigned int index) {
     return false;
   }
 
+  // Readable by this build, too, for the same reason: see loadStateFromSlot.
+  if (!is_savestate_compatible(
+          get_savestate_file(Emu.GetTitleID(), Emu.GetBoot(), index))) {
+    rpcsx_android.error("loadState: savestate %u is in a format this build "
+                        "cannot read",
+                        index);
+    return false;
+  }
+
   Emu.CallFromMainThread(
       [index]() { boot_current_game_savestate(false, index); });
   return true;
@@ -5452,6 +5466,17 @@ extern "C" bool _rpcsx_loadStateFromSlot(unsigned int slot) {
     return false;
   }
 
+  // And readable by this build. BootGame refuses a state in another savestate format,
+  // such as one saved before the RSX rework, but only once the running game is gone:
+  // the game screen then sat frozen with nothing said until the UI gave up on the
+  // boot two minutes later. Refusing here keeps the game running and lets the picker
+  // say the slot could not be loaded.
+  if (!is_savestate_compatible(path)) {
+    rpcsx_android.error("loadState: slot %u is in a format this build cannot read",
+                        slot);
+    return false;
+  }
+
   Emu.CallFromMainThread([path]() {
     // Boot from after_kill_callback rather than straight after GracefulShutdown.
     //
@@ -5485,6 +5510,14 @@ extern "C" bool _rpcsx_loadStateFromSlot(unsigned int slot) {
 
 extern "C" bool _rpcsx_hasStateInSlot(unsigned int slot) {
   return !armsx3_slot_find(Emu.GetTitleID(), slot).empty();
+}
+
+// Whether the slot's state is in a format this build can read. An occupied slot can
+// hold one it cannot, such as a state saved before the RSX rework; the loaders refuse
+// those, and the UI asks this to say why instead of showing a bare "couldn't load".
+extern "C" bool _rpcsx_isStateSlotReadable(unsigned int slot) {
+  const std::string path = armsx3_slot_find(Emu.GetTitleID(), slot);
+  return !path.empty() && is_savestate_compatible(path);
 }
 
 // Delete a slot, both the state and its thumbnail.
@@ -8040,6 +8073,15 @@ extern "C" bool _rpcsx_settingsSet(std::string_view path,
     return false;
   }
 
+  // The renderer too. The RSX rework (RPCS3/rpcs3#19918) made the node dynamic, and a write under
+  // a running game makes the display engine replace the renderer at its next flip. On Android that
+  // replacement left the game on a black screen (10-29, through a driver change), so a pick in the
+  // in-game menu stays what it was before the rework: saved, and applied by Apply & Restart.
+  if (root == &g_cfg.video.renderer && !Emu.IsStopped(true) && decoded != root->to_string()) {
+    rpcsx_android.notice("settingsSet: %s changes at the next boot, not under a running game", path);
+    return false;
+  }
+
   if (!root->from_string(decoded, !Emu.IsStopped())) {
     rpcsx_android.error("settingsSet: node %s does not accept value '%s'", path,
                         decoded);
@@ -8104,6 +8146,23 @@ extern "C" std::string _rpcsx_getVersion() {
   return rpcs3::get_version().to_string();
 }
 
+// How the previous process ended, as Android recorded it (ApplicationExitInfo), written at
+// startup. A session log that simply stops cannot tell the low-memory killer from a native
+// crash whose last lines never reached the file, or from the user closing a game that had
+// frozen; this line does, in the very next log a tester sends.
+extern "C" void _rpcsx_logPreviousExit(std::string_view line) {
+  rpcsx_android.warning("Previous exit: %s", line);
+}
+
+// Lets the UI glue put a driver problem where bug reports will carry it.
+//
+// The glue can only reach logcat, which nobody attaches to an issue, and the reason a
+// custom driver was refused is exactly what a report needs. Routed through the emulator
+// log channel so it lands in ARMSX3.log beside the driver identity it explains.
+extern "C" void _rpcsx_reportDriverProblem(std::string message) {
+  rpcsx_android.error("%s", message);
+}
+
 // Custom Vulkan driver (adrenotools).
 //
 // SPLIT OF RESPONSIBILITY: the JNI glue (native-lib.cpp) is what calls
@@ -8116,15 +8175,6 @@ extern "C" std::string _rpcsx_getVersion() {
 //
 // Returns the PREVIOUS handle so the caller can dlclose it. Passing nullptr
 // reverts to the system driver.
-// Lets the UI glue put a driver problem where bug reports will carry it.
-//
-// The glue can only reach logcat, which nobody attaches to an issue, and the reason a
-// custom driver was refused is exactly what a report needs. Routed through the emulator
-// log channel so it lands in ARMSX3.log beside the driver identity it explains.
-extern "C" void _rpcsx_reportDriverProblem(std::string message) {
-  rpcsx_android.error("%s", message);
-}
-
 extern "C" void *_rpcsx_setCustomDriver(void *driverHandle) {
   void *previous = vk::android::set_driver_handle(driverHandle);
 

@@ -47,11 +47,21 @@
 #include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
 
+#include "util/types.hpp"
+
 // Not every GL translation unit reaches this header via stdafx.h - glutils are
 // included from state_tracker.hpp first - so do not assume <string> is in scope.
 #include <string>
 
 #undef GL_GLES_PROTOTYPES
+
+// GL_ARB_robustness, used by the renderer reset detection in glutils/common.cpp. ES 3.2 has the
+// same entry point and enums in core, with the same values and no suffix.
+#define glGetGraphicsResetStatusARB glGetGraphicsResetStatus
+#define GL_RESET_NOTIFICATION_STRATEGY_ARB GL_RESET_NOTIFICATION_STRATEGY
+#define GL_LOSE_CONTEXT_ON_RESET_ARB GL_LOSE_CONTEXT_ON_RESET
+#define GL_GUILTY_CONTEXT_RESET_ARB GL_GUILTY_CONTEXT_RESET
+#define GL_INNOCENT_CONTEXT_RESET_ARB GL_INNOCENT_CONTEXT_RESET
 
 // GLHelpers.cpp declares its debug callback `void APIENTRY log_debug(...)`.
 // glew spells it APIENTRY, Khronos ES spells it GL_APIENTRY.
@@ -300,6 +310,13 @@ namespace gl::es
 	extern PFNGLTEXTUREVIEWEXTPROC          p_glTextureViewEXT;
 	extern PFNGLMULTIDRAWARRAYSEXTPROC      p_glMultiDrawArraysEXT;
 	extern PFNGLMULTIDRAWELEMENTSEXTPROC    p_glMultiDrawElementsEXT;
+
+	// ANGLE has no texture views of either spelling. glutils/image.cpp then makes a view the
+	// image itself and applies the view's swizzle and aspect to it (texture_view::create).
+	inline bool has_texture_views()
+	{
+		return p_glTextureViewEXT != nullptr;
+	}
 }
 
 // EXT_debug_marker. RPCS3 null-tests this one before calling (glutils/common.h
@@ -525,7 +542,9 @@ namespace gl::es
 	};
 
 	// Opens libEGL + libGLESv2 (ANGLE's or the system's) and resolves the entry
-	// points needed to make a context. Idempotent. Returns which one it got.
+	// points needed to make a context. Idempotent while the choice stands; a
+	// different ANGLE choice takes over once no context is left. Returns which
+	// one it got.
 	gl_backend egl_initialize();
 
 	// Which library the last egl_initialize() actually opened. For logging and
@@ -540,19 +559,40 @@ namespace gl::es
 	// Context lifecycle. `native_window` is an ANativeWindow*. `share` may be
 	// null; RPCS3 asks for one extra context per async shader-compiler thread and
 	// they must share with the primary, which is why creation takes it.
+	//
+	// make_current with a window binds the one window surface; without one it
+	// binds no surface at all, which is what the compiler threads get. A window
+	// surface can only be current on one thread at a time.
 	void* create_context(void* native_window, void* share_context);
 	void  destroy_context(void* context);
 	bool  make_current(void* context, void* native_window);
 	void  swap_buffers();
 	void  set_swap_interval(int interval);
+
+	// Follow the window the frame presents to. Android replaces it under a
+	// running game (rotation, a trip to the background), and a surface made for
+	// the old one presents nowhere. `epoch` changes with every replacement, even
+	// one that reuses the pointer. False while there is no window.
+	bool  present_window(void* context, void* native_window, u64 epoch);
+
+	// Have the driver report every call it rejects, to the log. ES says nothing about one unless
+	// asked, so a renderer still being brought up there shows a black screen and no reason.
+	// Errors only, on the current context, the first ones in full and then a count.
+	void  enable_error_reporting();
 }
 
 // ---- Generated-GLSL retargeting ---------------------------------------------
 //
-// Rewrites a finished shader's #version / #extension / precision header for ES.
-// Applied from gl::glsl::shader::precompile(), the one point every generated
-// shader passes through. Implementation and its list of known gaps: GLSLES.cpp.
+// Turns a finished desktop-GLSL shader into GLSL ES 3.20: through SPIR-V (glslang,
+// then SPIRV-Cross), or by rewriting its header if that fails. Applied from
+// gl::glsl::shader::precompile(), the one point every generated shader passes
+// through. Implementation and its list of known gaps: GLSLES.cpp.
+namespace glsl
+{
+	enum program_domain : unsigned char;
+}
+
 namespace gl::es
 {
-	void patch_glsl_for_es(std::string& source);
+	void patch_glsl_for_es(std::string& source, ::glsl::program_domain domain);
 }

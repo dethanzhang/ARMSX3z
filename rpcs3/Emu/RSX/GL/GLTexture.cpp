@@ -492,6 +492,20 @@ namespace gl
 			}
 			case texture::target::textureCUBE:
 			{
+#ifdef RSX_GLES
+				if (!gl::es::has_texture_views())
+				{
+					// ARMSX3: no texture view to draw into one face with. Draw into a copy and put it
+					// in place afterwards, as for 3D images.
+					scratch = std::make_unique<gl::texture>(
+						GL_TEXTURE_2D,
+						image_region.x + image_region.width, image_region.y + image_region.height, 1, 1, 1,
+						static_cast<GLenum>(dst->get_internal_format()), dst->format_class());
+
+					scratch_view = std::make_unique<gl::nil_texture_view>(scratch.get());
+					break;
+				}
+#endif
 				const subresource_range range = { image_aspect::depth | image_aspect::color, static_cast<GLuint>(dst_level), 1, dst_region.z , 1 };
 				scratch_view = std::make_unique<gl::texture_view>(dst, GL_TEXTURE_2D, range);
 				break;
@@ -512,6 +526,19 @@ namespace gl
 
 				if (dst->levels() > 1) [[ likely ]]
 				{
+#ifdef RSX_GLES
+					if (!gl::es::has_texture_views())
+					{
+						// ARMSX3: likewise for one mip level
+						scratch = std::make_unique<gl::texture>(
+							GL_TEXTURE_2D,
+							image_region.x + image_region.width, image_region.y + image_region.height, 1, 1, 1,
+							static_cast<GLenum>(dst->get_internal_format()), dst->format_class());
+
+						scratch_view = std::make_unique<gl::nil_texture_view>(scratch.get());
+						break;
+					}
+#endif
 					const subresource_range range = { image_aspect::depth | image_aspect::color, static_cast<GLuint>(dst_level), 1, 0 , 1 };
 					scratch_view = std::make_unique<gl::texture_view>(dst, GL_TEXTURE_2D, range);
 				}
@@ -528,6 +555,13 @@ namespace gl
 			bool use_compute_transform = (
 				dst->aspect() == gl::image_aspect::color &&  // Cannot use image_load_store with depth images
 				caps.subvendor_ATI == false);                // The old AMD/ATI driver does not support image writeonly without format specifier
+
+#ifdef RSX_GLES
+			// ARMSX3: neither does OpenGL ES. Every image there declares a format, which has to match
+			// what is bound, and the compute pass writes eleven formats through one image2D. Its
+			// program does not compile, so it is left to the raster pass, as on that AMD driver.
+			use_compute_transform = false;
+#endif
 
 			if (use_compute_transform)
 			{
@@ -577,7 +611,21 @@ namespace gl
 				}
 				break;
 			}
-			default: break;
+			default:
+			{
+#ifdef RSX_GLES
+				if (scratch)
+				{
+					// ARMSX3: a cube face or mip level drawn without a texture view, see above
+					const u32 face = (dst->get_target() == texture::target::textureCUBE) ? dst_region.z : 0;
+					const position3u src_offset = { dst_region.position.x, dst_region.position.y, 0 };
+					const position3u dst_offset = { dst_region.position.x, dst_region.position.y, face };
+					g_hw_blitter->copy_image(cmd, scratch.get(), dst, src_offset, dst_offset, { dst_region.width, dst_region.height, 1 },
+						{ .dst_mip_level = static_cast<u8>(dst_level) });
+				}
+#endif
+				break;
+			}
 			}
 		}
 		else
@@ -922,7 +970,7 @@ namespace gl
 		fill_texture(cmd, dst, gcm_format, subresources_layout, is_swizzled, gl_format, gl_type, data_upload_buf);
 
 		// Notify the renderer of the upload
-		auto renderer = static_cast<GLGSRender*>(rsx::get_current_renderer());
+		auto renderer = static_cast<GLGSRender*>(rsx::get_current_render_backend());
 		renderer->on_guest_texture_read();
 	}
 

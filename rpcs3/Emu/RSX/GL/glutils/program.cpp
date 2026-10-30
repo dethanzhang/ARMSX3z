@@ -110,7 +110,7 @@ namespace gl
 			// ARMSX3: retarget the generated source at OpenGL ES. This is the one
 			// point every shader passes through, whether it came from an emitter or
 			// from a fixed GLSLSnippets file. See GLSLES.cpp.
-			gl::es::patch_glsl_for_es(source);
+			gl::es::patch_glsl_for_es(source, type);
 #endif
 
 			if (gl::get_driver_caps().vendor_INTEL)
@@ -288,6 +288,12 @@ namespace gl
 				}
 
 				rsx_log.fatal("Linkage failed: %s", error_msg);
+
+				// ARMSX3: fenced all the same. sync() waits on this fence for every program, linked
+				// or not, and an empty one fails its check and takes the RSX thread down with it. A
+				// program that failed to link then draws nothing, which is all it could do anyway.
+				m_fence.create();
+				flush_command_queue(m_fence);
 			}
 			else
 			{
