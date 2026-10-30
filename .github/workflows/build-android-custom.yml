@@ -145,14 +145,23 @@ jobs:
               exit 1
             fi
           done
-          printf '%s' "$KS_B64" | base64 -d > android/armsx3-ui/armsx3-release.jks
+          KS_PATH="$PWD/android/armsx3-ui/armsx3-release.jks"
+          printf '%s' "$KS_B64" | base64 -d > "$KS_PATH"
+          # storeFile 必须写**绝对路径**：app 模块 build 脚本里的 `file(...)` 是相对
+          # **app 模块目录**解析的（不是 rootProject），写相对名会变成 app/xxx.jks，
+          # 于是 validateSigning* 报 "Keystore file ... not found for signing config 'upload'"。
+          # （上游 build-play-aab.sh 的文档写的也是 storeFile=/absolute/path/to/upload.jks）
           {
-            echo "storeFile=armsx3-release.jks"
+            echo "storeFile=$KS_PATH"
             echo "storePassword=${KS_STORE_PW}"
             echo "keyAlias=${KS_ALIAS}"
             echo "keyPassword=${KS_KEY_PW}"
           } > android/armsx3-ui/keystore.properties
-          chmod 600 android/armsx3-ui/armsx3-release.jks android/armsx3-ui/keystore.properties
+          chmod 600 "$KS_PATH" android/armsx3-ui/keystore.properties
+          test -s "$KS_PATH" || { echo "::error::keystore 解码失败（DIMG_KEYSTORE_B64 不完整？）"; exit 1; }
+          grep -q "storeFile=$KS_PATH" android/armsx3-ui/keystore.properties \
+            || { echo "::error::keystore.properties 的 storeFile 不是绝对路径"; exit 1; }
+          echo "keystore: $KS_PATH ($(wc -c < "$KS_PATH") B)"
           echo "signing=upload" >> "$GITHUB_OUTPUT"
           keytool -list -v -keystore android/armsx3-ui/armsx3-release.jks \
             -storepass "$KS_STORE_PW" -alias "$KS_ALIAS" 2>/dev/null | grep -E 'Alias|SHA256' || true
