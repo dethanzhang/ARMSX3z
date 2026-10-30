@@ -6,7 +6,7 @@
 master = 上游镜像 + 新增文件 + tools/custom/* + workflow      ← 唯一需要维护的分支
          · Sync fork 随时点，零冲突（我们从不改上游文件）
          · 出包：Actions → Build ARMSX3 (custom Android) → Run workflow（**手动**）
-         · CI 在 checkout 之后自己打那 16 处钩子
+         · CI 在 checkout 之后自己打那 17 处钩子
          · 这个 workflow **故意没有任何 push 触发**：否则 Sync fork / 合上游
            产生的提交都会烧一次 1~2 小时的构建
 ```
@@ -42,7 +42,7 @@ CI              = checkout 任意分支 → apply_custom_hooks.py → 编译 →
 ```bash
 python3 tools/custom/apply_custom_hooks.py           # 打钩子（已打过的跳过）
 python3 tools/custom/apply_custom_hooks.py --check   # 只检查；缺任何一条就非零退出
-python3 tools/custom/apply_custom_hooks.py --list    # 列出 16 条钩子及其作用
+python3 tools/custom/apply_custom_hooks.py --list    # 列出 17 条钩子及其作用
 ```
 
 CI 里（`.github/workflows/build-android-custom.yml`）在 checkout 之后立刻调用它，所以：
@@ -110,6 +110,16 @@ SHA-256 + **MGF1-SHA1** 成功。所以 `iso_pack.py` 现在按 profile 决定�
 iso_pack.py activate --profile android --request req.bin --oaep sha1 --out license.bin
 ```
 
+## 换图标
+
+```bash
+python3 tools/custom/make_icons.py ~/Downloads/icon.png      # 方形 ≥512 建议
+```
+
+写进 `app/src/github/res/mipmap-*/ic_launcher[_round].png`（48/72/96/144/192）
+和 `res/drawable/ic_armsx3_mark.png`（应用内标记）。**flavor 资源优先于 main**，
+所以既换了图标又没碰上游文件。原版 ARMSX3 的图标不受影响。
+
 ## 附带的自检
 
 ```bash
@@ -132,7 +142,7 @@ CI 的 `Sanity check custom pieces` 里也会跑它。
 | `Config.h` | `RSX/VK/FrameGen/FrameGenTypes.h` 里移植残留的 `#include "Config.h"`（本仓库没有这个头） |
 | `Emu/system.h` | `RSX/VK/vkutils/sync.cpp` 里写成小写的 `#include "Emu/system.h"`（真实文件是 `Emu/System.h`） |
 
-## 钩子清单（16 条）
+## 钩子清单（17 条）
 
 | name | 文件 | 作用 |
 |---|---|---|
@@ -147,6 +157,7 @@ CI 的 `Sanity check custom pieces` 里也会跑它。
 | `drawer-kt` | `navigation/NavigationDrawer.kt` | 抽屉入口 + 高亮判定 |
 | `apptab-kt` | `ui/settings/AppTab.kt` | 设置页入口行（含「已激活/未激活」） |
 | `gate-kt` | `runtime/MainActivityRuntime.kt` | 开游戏前的授权闸门 `gateDimg()` |
+| `package-id` | `android/.../app/build.gradle.kts` | `applicationId` → **`com.armsx3custom`**（play flavor → `.play`）：与原版 ARMSX3 同机共存，各自独立的 `/data/data/<pkg>`、Keystore、SAF 授权；manifest 的 authorities 都是 `${applicationId}.*`，不会撞 |
 | `discord-aar` | `android/.../app/build.gradle.kts` | 没有 `libs/discord_partner_sdk.aar` 时**不声明**这个依赖，否则 `merge*NativeLibs` 阶段 transform 不存在的 aar 直接失败 |
 | `savers-gl-case` | `android/.../savers/skyrocket/shockwave.cpp` | `<gl/gl.h>` → `<GL/gl.h>`：仓库里是 `savers/compat/GL/gl.h`，macOS 大小写不敏感能编，Linux fatal error |
 | `discord-sdk` | `android/.../app/src/main/cpp/CMakeLists.txt` | 给 `armsx2_discord` 的 aarch64 条件加 `EXISTS` 判断：Discord Social SDK 是专有的、不随仓库分发，git 上拉下来的树里没有 `libdiscord_partner_sdk.so`，否则 ninja 报 "missing and no known rule to make it" |

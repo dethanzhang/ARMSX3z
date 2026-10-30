@@ -407,6 +407,17 @@ DISCORD_DEP_NEW = """    // 定制版：Discord Social SDK 是专有、不随仓
 SAVERS_GL_OLD = "#include <gl/gl.h>"
 SAVERS_GL_NEW = "#include <GL/gl.h>"
 
+# 包名：定制版要与原版 ARMSX3 共存（同一台设备上装两个）。applicationId 是 Android 的
+# 应用身份，改了就是另一个 app：独立的 /data/data/<pkg>、独立的 Keystore 命名空间、
+# 独立的 SAF 授权。manifest 里的 authorities 都用 ${applicationId}.* 占位，所以不会撞。
+# 注意：换包名 = 换 UID ⇒ AndroidKeyStore 里的旧设备密钥不可见 ⇒ 已发 license 全部 E6，
+# 必须重新生成申请码并重签。
+APPID_OLD = '        applicationId = "com.armsx3"'
+APPID_NEW = '        applicationId = "com.armsx3custom"'
+
+PLAYID_OLD = '            applicationId = "com.armsx3.play"'
+PLAYID_NEW = '            applicationId = "com.armsx3custom.play"'
+
 # Discord Social SDK：专有、不随仓库分发（上游 README 自己说的），但胶水层的 CMakeLists
 # 对 aarch64 无条件 add_library(armsx2_discord) + IMPORTED libdiscord_partner_sdk.so，
 # 干净克隆里没这个 .so → ninja 报 "missing and no known rule to make it"。
@@ -474,6 +485,11 @@ HOOKS: list[Hook] = [
         _insert_after(t, GATE_CALL_ANCHOR, GATE_CALL_PAYLOAD, "MainActivityRuntime.kt：闸门调用"), GATE_FN_ANCHOR,
         GATE_FN_PAYLOAD, "MainActivityRuntime.kt：闸门实现"),
          "开游戏前的授权闸门"),
+    Hook("package-id", "android/armsx3-ui/app/build.gradle.kts", '"com.armsx3custom"',
+         lambda t: _replace_once(_replace_once(t, APPID_OLD, APPID_NEW,
+                                               "build.gradle.kts：applicationId"),
+                                 PLAYID_OLD, PLAYID_NEW, "build.gradle.kts：play flavor 的 applicationId"),
+         "包名改成 com.armsx3custom —— 与原版 ARMSX3 共存，互不干扰"),
     Hook("discord-aar", "android/armsx3-ui/app/build.gradle.kts",
          'if (file("libs/discord_partner_sdk.aar").exists())',
          lambda t: _replace_once(t, DISCORD_DEP_OLD, DISCORD_DEP_NEW,
