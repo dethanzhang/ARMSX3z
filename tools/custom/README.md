@@ -113,8 +113,11 @@ iso_pack.py activate --profile android --request req.bin --oaep sha1 --out licen
 ## 换图标
 
 ```bash
-python3 tools/custom/make_icons.py ~/Downloads/icon.png      # 方形 ≥512 建议
+python3 tools/custom/make_icons.py tools/custom/assets/icon-source.png
 ```
+
+源图就存在 `tools/custom/assets/icon-source.png`（1280×1280，橙金配色版；
+原来那张紫色的是 `assets/boot/armsx3-boot-xmb-poster.png`）。换新图时覆盖这个文件再跑一遍即可。
 
 写进 `app/src/github/res/mipmap-*/ic_launcher[_round].png`（48/72/96/144/192）
 和 `res/drawable/ic_armsx3_mark.png`（应用内标记）。**flavor 资源优先于 main**，
