@@ -388,6 +388,19 @@ GATE_FN_PAYLOAD = """        /**
 
 """
 
+# Discord Social SDK 的 Gradle 依赖：aar 不存在时不要声明，否则 Gradle 在
+# merge*NativeLibs 阶段会试图 transform 一个不存在的 aar 而失败
+# （第七次构建：Could not resolve ... Failed to transform discord_partner_sdk.aar）。
+# 与 CMake 那条（discord-sdk）是一对：一个管 native target，一个管 Gradle 依赖。
+DISCORD_DEP_OLD = """    implementation(files("libs/discord_partner_sdk.aar"))"""
+
+DISCORD_DEP_NEW = """    // 定制版：Discord Social SDK 是专有、不随仓库分发的；文件不在就不要声明这个依赖
+    // （否则 merge*NativeLibs 阶段会 transform 一个不存在的 aar 而失败）。
+    // 想启用 Discord：把 discord_partner_sdk.aar 放进 app/libs/（同上游 README）。
+    if (file("libs/discord_partner_sdk.aar").exists()) {
+        implementation(files("libs/discord_partner_sdk.aar"))
+    }"""
+
 # savers（XScreenSaver 移植）里唯一一处大小写错的 include：
 #   savers/skyrocket/shockwave.cpp 写 <gl/gl.h>，仓库里实际是 savers/compat/GL/gl.h
 # macOS 大小写不敏感能编，Linux 上 fatal error（第六次构建就死在这）。
@@ -461,6 +474,11 @@ HOOKS: list[Hook] = [
         _insert_after(t, GATE_CALL_ANCHOR, GATE_CALL_PAYLOAD, "MainActivityRuntime.kt：闸门调用"), GATE_FN_ANCHOR,
         GATE_FN_PAYLOAD, "MainActivityRuntime.kt：闸门实现"),
          "开游戏前的授权闸门"),
+    Hook("discord-aar", "android/armsx3-ui/app/build.gradle.kts",
+         'if (file("libs/discord_partner_sdk.aar").exists())',
+         lambda t: _replace_once(t, DISCORD_DEP_OLD, DISCORD_DEP_NEW,
+                                 "build.gradle.kts：Discord aar 依赖"),
+         "没有 Discord Social SDK 的 aar 时不要声明依赖（否则 mergeNativeLibs 阶段失败）"),
     Hook("savers-gl-case", "android/armsx3-ui/app/src/main/cpp/savers/skyrocket/shockwave.cpp",
          "#include <GL/gl.h>",
          lambda t: _replace_once(t, SAVERS_GL_OLD, SAVERS_GL_NEW,
