@@ -100,6 +100,10 @@ license 里的密钥盒子是 RSA-OAEP。不同厂商的 TEE / StrongBox 对「�
 所以客户端（`DimgKeystore.decrypt`）按 **sha256/mgf1-sha256 → sha256/mgf1-sha1 → sha1/mgf1-sha1**
 依次尝试，哪个成功用哪个；三种参数都失败时，把 Cipher 抛的原文显示在授权页（"底层原因：…"）。
 
+**真机实证（2026-10-30，Snapdragon）**：SHA-256 + **MGF1-SHA256** 被 TEE 拒绝（E6），
+SHA-256 + **MGF1-SHA1** 成功。所以 `iso_pack.py` 现在按 profile 决定默认
+（`android → sha256-mgf1sha1`，win/deck → `sha256`）。
+
 发行侧可以任选一种签：
 
 ```bash
