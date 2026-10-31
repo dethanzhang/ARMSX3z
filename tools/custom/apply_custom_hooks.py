@@ -61,6 +61,19 @@ def _replace_once(text: str, old: str, new: str, what: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _drop_region(text: str, start: str, end: str, what: str) -> str:
+    """删掉 [start, end) 之间的内容（end 本身保留）。两端锚点都必须唯一。"""
+    if text.count(start) != 1:
+        raise HookError(f"起点出现 {text.count(start)} 次（期望 1 次）：{what}\n--- 起点 ---\n{start}")
+    if text.count(end) != 1:
+        raise HookError(f"终点出现 {text.count(end)} 次（期望 1 次）：{what}\n--- 终点 ---\n{end}")
+    i = text.index(start)
+    j = text.index(end, i)
+    if j <= i:
+        raise HookError(f"终点在起点之前：{what}")
+    return text[:i] + text[j:]
+
+
 def _insert_before(text: str, anchor: str, payload: str, what: str) -> str:
     count = text.count(anchor)
     if count != 1:
@@ -264,7 +277,8 @@ NAV_ANCHOR = """                AppRoute.Licenses -> LicensesScreen(onBack = { U
 NAV_PAYLOAD = """                AppRoute.License -> com.armsx2.ui.license.LicenseScreen(onBack = UiNavigator::home)
 """
 
-DRAWER_ITEM_ANCHOR = """        DrawerItem("news.title", "📰", AppRoute.News),
+# 锚在 remoteplay 行（它保留）：news/friends 会被 drawer-prune 删掉，不能当锚点
+DRAWER_ITEM_ANCHOR = """        DrawerItem("remoteplay.title", "📡", AppRoute.RemotePlay),
 """
 
 DRAWER_ITEM_PAYLOAD = """        // 授权（定制版）：没有它加密的盘进不去，所以放在抽屉里，不和 About 混。
@@ -401,6 +415,31 @@ DISCORD_DEP_NEW = """    // 定制版：Discord Social SDK 是专有、不随仓
         implementation(files("libs/discord_partner_sdk.aar"))
     }"""
 
+# ---------------------------------------------------------------------------
+# 定制版界面精简（用户要求）：抽屉去掉 discord/github/网站/更新内容/朋友；
+# 「关于应用」去掉 GitHub/RPCS3/开源许可/两个音乐credits；About 里的应用名改成
+# 「ARMSX3定制版」（走 ArmsLogo 新增的 wordmark 参数，避免把抽屉头部也撑爆）。
+# ---------------------------------------------------------------------------
+DRAWER_PRUNE_START = '        DrawerItem("about.discord"'
+DRAWER_PRUNE_END = '        DrawerItem("remoteplay.title", "📡", AppRoute.RemotePlay),'
+
+ABOUT_PRUNE_START = '''                    if (compact) {
+                        ProjectCard(
+                            title = str("about.repository.title"),'''
+# 函数尾部（保留）：删掉的区域一直到它为止
+ABOUT_PRUNE_TAIL = '''                }
+            }
+        }
+    }
+}
+'''
+
+WORDMARK_SIG_OLD = "fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp) {"
+WORDMARK_SIG_NEW = "fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp, wordmark: String = \"ARMSX3\") {"
+
+ABOUT_LOGO_OLD = "                            ArmsLogo(showWordmark = true)"
+ABOUT_LOGO_NEW = "                            ArmsLogo(showWordmark = true, wordmark = \"ARMSX3定制版\")"
+
 # savers（XScreenSaver 移植）里唯一一处大小写错的 include：
 #   savers/skyrocket/shockwave.cpp 写 <gl/gl.h>，仓库里实际是 savers/compat/GL/gl.h
 # macOS 大小写不敏感能编，Linux 上 fatal error（第六次构建就死在这）。
@@ -475,6 +514,27 @@ HOOKS: list[Hook] = [
          "授权页路由"),
     Hook("nav-kt", KT + "com/armsx2/navigation/AppNavigation.kt", "AppRoute.License ->", lambda t: _insert_after(t, NAV_ANCHOR, NAV_PAYLOAD, "AppNavigation.kt：License 分支"),
          "路由 → 页面"),
+    Hook("drawer-prune", "android/armsx3-ui/app/src/main/java/com/armsx2/navigation/NavigationDrawer.kt",
+         '"about.discord"',
+         lambda t: _drop_region(t, DRAWER_PRUNE_START, DRAWER_PRUNE_END,
+                                "抽屉：discord/github/网站/更新内容/朋友"),
+         "抽屉去掉 discord / github / 网站 / 更新内容 / 朋友"),
+    Hook("about-prune", "android/armsx3-ui/app/src/main/java/com/armsx2/ui/about/AboutScreen.kt",
+         '"about.repository.title"',
+         lambda t: _drop_region(t, ABOUT_PRUNE_START, ABOUT_PRUNE_TAIL,
+                                "关于页：GitHub/RPCS3/开源许可/两条 credits"),
+         "关于页去掉 GitHub 仓库 / RPCS3 项目 / 开源许可 / 音乐与菜单音效署名"),
+    Hook("wordmark-param", "android/armsx3-ui/app/src/main/java/com/armsx2/ui/common/ArmsComponents.kt",
+         "wordmark: String = ",
+         lambda t: _replace_once(t, WORDMARK_SIG_OLD + "\n", WORDMARK_SIG_NEW + "\n",
+                                 "ArmsLogo：加 wordmark 参数").replace(
+                                     '                text = "ARMSX3",',
+                                     "                text = wordmark,", 1),
+         "ArmsLogo 支持自定义文字（默认仍是 ARMSX3，不影响抽屉/引导页）"),
+    Hook("about-wordmark", "android/armsx3-ui/app/src/main/java/com/armsx2/ui/about/AboutScreen.kt",
+         "wordmark = \"ARMSX3定制版\"",
+         lambda t: _replace_once(t, ABOUT_LOGO_OLD, ABOUT_LOGO_NEW, "关于页：应用名"),
+         "关于页的应用名显示为「ARMSX3定制版」"),
     Hook("drawer-kt", KT + "com/armsx2/navigation/NavigationDrawer.kt", "AppRoute.License)", _drawer,
          "抽屉入口 + 高亮判定"),
     Hook("apptab-kt", KT + "com/armsx2/ui/settings/AppTab.kt", "dimgActive", lambda t: _insert_after(

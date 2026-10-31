@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.sp
 import com.armsx2.dimg.Dimg
 import com.armsx2.ui.common.ArmsBackdrop
 import com.armsx2.ui.common.ArmsTopBar
-import com.armsx2.ui.common.ConfirmOverlay
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.settings.ControllerAutoScroll
@@ -66,7 +65,6 @@ fun LicenseScreen(onBack: () -> Unit) {
     var pasted by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var confirmReset by remember { mutableStateOf(false) }
 
     fun refresh() {
         scope.launch {
@@ -134,8 +132,8 @@ fun LicenseScreen(onBack: () -> Unit) {
                         Text("第一步：生成申请码", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "点下面的按钮，把这串码发给我（QQ / 微信都行）。" +
-                                "同时会写一份 config/dimg/request.bin，两个任选其一给我。",
+                            "点下面的按钮，把这串码发给作者（QQ / 微信都行）。" +
+                                "同时会写一份 config/dimg/request.bin，两个任选其一发给作者。",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(8.dp))
@@ -151,7 +149,7 @@ fun LicenseScreen(onBack: () -> Unit) {
                                             message = if (err.isEmpty()) "生成失败" else err
                                         } else {
                                             code = generated
-                                            message = "申请码已生成：复制后发给我"
+                                            message = "申请码已生成：复制后发给作者"
                                         }
                                     }
                                 },
@@ -234,11 +232,6 @@ fun LicenseScreen(onBack: () -> Unit) {
                                 "另外：Android 版认的是「Android 档」的盘，Windows / Steam Deck 的 ISO 打不开，反之亦然。",
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            enabled = !busy,
-                            onClick = { confirmReset = true },
-                        ) { Text("重置设备密钥") }
                     }
                 }
 
@@ -247,26 +240,4 @@ fun LicenseScreen(onBack: () -> Unit) {
         }
     }
 
-    if (confirmReset) {
-        ConfirmOverlay(
-            title = "重置设备密钥？",
-            message = "会删掉 AndroidKeyStore 里的密钥和已导入的授权。已发出的 license 随之失效，" +
-                "之后必须重新生成申请码并重新签发。",
-            destructive = true,
-            confirmLabel = "重置",
-            onDismiss = { confirmReset = false },
-            onConfirm = {
-                confirmReset = false
-                busy = true
-                scope.launch {
-                    val note = withContext(Dispatchers.IO) { Dimg.reset() }
-                    busy = false
-                    message = note
-                    code = ""
-                    refresh()
-                }
-            },
-            idPrefix = "dimg-reset",
-        )
-    }
 }
