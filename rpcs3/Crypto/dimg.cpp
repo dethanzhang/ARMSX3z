@@ -1031,13 +1031,33 @@ namespace dimg
 			return false;
 		}
 
-		bool ok = false;
-		EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pk, nullptr);
-		if (ctx && EVP_PKEY_decrypt_init(ctx) == 1 &&
-			EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) == 1 &&
-			EVP_PKEY_CTX_set_rsa_oaep_md(ctx, EVP_sha256()) == 1 &&
-			EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, EVP_sha256()) == 1)
+		// 与真机客户端保持一致：依次尝试三种 OAEP 参数组合
+		// （Android 发行默认是 sha256/mgf1-sha1，win/deck 是 sha256/mgf1-sha256）
+		struct oaep_variant
 		{
+			const EVP_MD* (*md)();
+			const EVP_MD* (*mgf)();
+			const char* label;
+		};
+		static const oaep_variant variants[] = {
+			{EVP_sha256, EVP_sha256, "sha256/mgf1-sha256"},
+			{EVP_sha256, EVP_sha1,   "sha256/mgf1-sha1"},
+			{EVP_sha1,   EVP_sha1,   "sha1/mgf1-sha1"},
+		};
+
+		bool ok = false;
+		for (const oaep_variant& v : variants)
+		{
+			EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(pk, nullptr);
+			if (!ctx || EVP_PKEY_decrypt_init(ctx) != 1 ||
+				EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) != 1 ||
+				EVP_PKEY_CTX_set_rsa_oaep_md(ctx, v.md()) != 1 ||
+				EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, v.mgf()) != 1)
+			{
+				EVP_PKEY_CTX_free(ctx);
+				continue;
+			}
+
 			u8 tmp[RSA_BYTES] = {};
 			usz n = sizeof(tmp);
 			if (EVP_PKEY_decrypt(ctx, tmp, &n, in, RSA_BYTES) == 1 && n == BOX_PLAIN)
@@ -1045,10 +1065,16 @@ namespace dimg
 				std::memcpy(out, tmp, BOX_PLAIN);
 				out_len = BOX_PLAIN;
 				ok = true;
+				dimg_log.notice("selftest: license box opened with %s", v.label);
 			}
 			secure_zero(tmp, sizeof(tmp));
+			EVP_PKEY_CTX_free(ctx);
+			if (ok)
+			{
+				break;
+			}
 		}
-		EVP_PKEY_CTX_free(ctx);
+
 		EVP_PKEY_free(pk);
 		return ok;
 #endif

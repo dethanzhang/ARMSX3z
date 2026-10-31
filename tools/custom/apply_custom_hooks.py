@@ -43,6 +43,12 @@ ROOT = Path(__file__).resolve().parents[2]   # 仓库根（ARMSX3z/）
 
 @dataclass
 class Hook:
+    """一条构建时补丁。
+
+    marker 的语义：
+      * 普通字符串 —— 它**存在**就说明已经打过（增删类补丁）
+      * "!xxx"      —— 它**不存在**才说明已经打过（删除类补丁，比如"删掉抽屉里那五行"）
+    """
     name: str
     path: str
     marker: str
@@ -515,12 +521,12 @@ HOOKS: list[Hook] = [
     Hook("nav-kt", KT + "com/armsx2/navigation/AppNavigation.kt", "AppRoute.License ->", lambda t: _insert_after(t, NAV_ANCHOR, NAV_PAYLOAD, "AppNavigation.kt：License 分支"),
          "路由 → 页面"),
     Hook("drawer-prune", "android/armsx3-ui/app/src/main/java/com/armsx2/navigation/NavigationDrawer.kt",
-         '"about.discord"',
+         '!"about.discord"',
          lambda t: _drop_region(t, DRAWER_PRUNE_START, DRAWER_PRUNE_END,
                                 "抽屉：discord/github/网站/更新内容/朋友"),
          "抽屉去掉 discord / github / 网站 / 更新内容 / 朋友"),
     Hook("about-prune", "android/armsx3-ui/app/src/main/java/com/armsx2/ui/about/AboutScreen.kt",
-         '"about.repository.title"',
+         '!"about.repository.title"',
          lambda t: _drop_region(t, ABOUT_PRUNE_START, ABOUT_PRUNE_TAIL,
                                 "关于页：GitHub/RPCS3/开源许可/两条 credits"),
          "关于页去掉 GitHub 仓库 / RPCS3 项目 / 开源许可 / 音乐与菜单音效署名"),
@@ -620,7 +626,11 @@ def main() -> int:
 
         text = path.read_text(encoding="utf-8")
 
-        if hook.marker in text:
+        if hook.marker.startswith("!"):
+            if hook.marker[1:] not in text:
+                already += 1
+                continue
+        elif hook.marker in text:
             already += 1
             continue
 
