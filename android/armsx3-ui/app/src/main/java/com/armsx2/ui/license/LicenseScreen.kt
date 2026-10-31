@@ -3,6 +3,7 @@ package com.armsx2.ui.license
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,29 +13,36 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.dimg.Dimg
 import com.armsx2.ui.common.ArmsBackdrop
 import com.armsx2.ui.common.ArmsTopBar
+import com.armsx2.ui.common.ConfirmOverlay
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
 import com.armsx2.ui.settings.ControllerAutoScroll
@@ -48,7 +56,14 @@ import kotlinx.coroutines.withContext
  * 流程与桌面版一一对应，只是没有命令行：
  *   ① 点「生成申请码」→ 拿到一串激活码（同时写 config/dimg/request.bin）
  *   ② 把它发给作者（贴聊天窗口也行，就是那串 Base32）
- *   ③ 作者回 license.bin / 或者一串授权码 → 这里「导入」
+ *   ③ 作者回一份 .lic / 或者一串授权码 → 这里「导入」
+ *      （P3 起是多份 store：每份落在 config/dimg/licenses/<licid>.lic，可以同时装多份；
+ *        打开某张盘时按盘上的 tag 自动挑对应那份；列表里可单独删除）
+ *
+ * P3 起 core 用「多 license store」：每份授权单独存进 config/dimg/licenses/<licid>.lic，
+ * 打开某张盘时按盘上的 tag 自动挑对应的那份。所以这里多了一个「已安装的授权」列表：
+ * 装了几份、哪份本机能解（opens）、哪份只能删掉重发，都在那一屏说清楚。
+ * 旧的单槽 license.bin 不再读取（升级后要重新导入 .lic）。
  *
  * 没有授权时打不开加密的盘：启动闸门会拦下并跳到这里（见 MainActivityRuntime.launchGame）。
  */
@@ -58,21 +73,31 @@ fun LicenseScreen(onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
 
-    // 一次就好：JNI 会读 license.bin，别每次重组都走一遍
+    // 一次就好：JNI 会读授权 store，别每次重组都走一遍
     val supported = remember { Dimg.supported() }
     var status by remember { mutableStateOf<Dimg.Status?>(null) }
+    var licenses by remember { mutableStateOf<List<Dimg.License>>(emptyList()) }
     var code by remember { mutableStateOf("") }
     var pasted by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    // message：删除的结果，显示在列表底下；hint：申请码 / 导入的结果，显示在第二步底下
     var message by remember { mutableStateOf("") }
+    var hint by remember { mutableStateOf("") }
+    // 等二次确认的那份授权；null = 没弹确认框
+    var pendingDelete by remember { mutableStateOf<Dimg.License?>(null) }
 
-    fun refresh() {
-        scope.launch {
-            status = withContext(Dispatchers.IO) { Dimg.status() }
-        }
+    // 状态与列表永远一起取：删/导入之后两边要同步，不能一个新一个旧
+    suspend fun reload() {
+        val (st, list) = withContext(Dispatchers.IO) { Dimg.status() to Dimg.licenses() }
+        status = st
+        licenses = list
     }
 
-    androidx.compose.runtime.LaunchedEffect(Unit) { refresh() }
+    fun refresh() {
+        scope.launch { reload() }
+    }
+
+    LaunchedEffect(Unit) { refresh() }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -80,15 +105,24 @@ fun LicenseScreen(onBack: () -> Unit) {
         if (uri == null) return@rememberLauncherForActivityResult
         busy = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) { Dimg.importFile(uri.toString()) }
-            message = if (result.isEmpty()) "授权已导入，可以开始游戏了" else result
+            val (result, count) = withContext(Dispatchers.IO) {
+                val r = Dimg.importFile(uri.toString())
+                // 成功才再数一遍；失败时保持原提示，不报个假的份数
+                r to if (r.isEmpty()) Dimg.licenses().size else 0
+            }
+            hint = if (result.isEmpty()) "已导入；当前共 $count 份" else result
             busy = false
-            refresh()
+            reload()
         }
     }
 
     val scroll = rememberScrollState()
     ControllerAutoScroll(scroll)
+
+    // 全路径只用于排障：整段放在「关于」里，从不出现在列表行上
+    val licensesDir = remember {
+        runCatching { Dimg.licensesDirPath() }.getOrDefault("config/dimg/licenses")
+    }
 
     ArmsBackdrop {
         Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
@@ -114,8 +148,16 @@ fun LicenseScreen(onBack: () -> Unit) {
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
                         )
+                        // reason 里已经带了「已安装 N 份授权（本机可用 M 份）」这类汇总，原样显示
                         st?.let {
                             Text(it.reason, style = MaterialTheme.typography.bodySmall)
+                            if (!it.active && supported) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "有本机可用的 .lic 就会激活（还没有设备密钥就先点「生成申请码」）。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                         if (!supported) {
                             Spacer(Modifier.height(6.dp))
@@ -123,6 +165,38 @@ fun LicenseScreen(onBack: () -> Unit) {
                                 "这个安装包不带授权功能（不是定制版）：加密的盘打不开。",
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                        }
+                    }
+                }
+
+                // ---- 已安装的授权：store 里有什么、哪份本机能用、删哪份 ----
+                GlassPanel(Modifier.fillMaxWidth()) {
+                    Column {
+                        Text(
+                            "已安装的授权（${licenses.size}）",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        if (licenses.isEmpty()) {
+                            Text(
+                                "还没有导入授权。把作者发的授权文件逐个导入（一次一份，文件名不限）。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                licenses.forEach { lic ->
+                                    LicenseRow(
+                                        lic = lic,
+                                        busy = busy,
+                                        onDelete = { pendingDelete = lic },
+                                    )
+                                }
+                            }
+                        }
+                        if (message.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(message, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -146,10 +220,10 @@ fun LicenseScreen(onBack: () -> Unit) {
                                         val (generated, err) = withContext(Dispatchers.IO) { Dimg.requestCode() }
                                         busy = false
                                         if (generated.isEmpty()) {
-                                            message = if (err.isEmpty()) "生成失败" else err
+                                            hint = if (err.isEmpty()) "生成失败" else err
                                         } else {
                                             code = generated
-                                            message = "申请码已生成：复制后发给作者"
+                                            hint = "申请码已生成：复制后发给作者"
                                         }
                                     }
                                 },
@@ -182,7 +256,9 @@ fun LicenseScreen(onBack: () -> Unit) {
                         Text("第二步：导入授权", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "拿到 license.bin 就点「选择文件」；只拿到一串激活码就粘到下面。",
+                            "拿到授权文件就点「选择授权文件」导入（一次一份；文件名不限，" +
+                                "作者发的 `.lic`、`license.bin`、`xxx.bin` 都行，只认内容）；" +
+                                "只拿到一串激活码就粘到下面。",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Spacer(Modifier.height(8.dp))
@@ -200,11 +276,14 @@ fun LicenseScreen(onBack: () -> Unit) {
                                 onClick = {
                                     busy = true
                                     scope.launch {
-                                        val result = withContext(Dispatchers.IO) { Dimg.importText(pasted) }
+                                        val (result, count) = withContext(Dispatchers.IO) {
+                                            val r = Dimg.importText(pasted)
+                                            r to if (r.isEmpty()) Dimg.licenses().size else 0
+                                        }
                                         busy = false
-                                        message = if (result.isEmpty()) "授权已导入，可以开始游戏了" else result
+                                        hint = if (result.isEmpty()) "已导入；当前共 $count 份" else result
                                         if (result.isEmpty()) pasted = ""
-                                        refresh()
+                                        reload()
                                     }
                                 },
                             ) { Text("导入激活码") }
@@ -212,12 +291,12 @@ fun LicenseScreen(onBack: () -> Unit) {
                             Button(
                                 enabled = !busy,
                                 onClick = { picker.launch(arrayOf("application/octet-stream", "*/*")) },
-                            ) { Text("选择 license.bin") }
+                            ) { Text("选择授权文件") }
                         }
 
-                        if (message.isNotEmpty()) {
+                        if (hint.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
-                            Text(message, style = MaterialTheme.typography.bodySmall)
+                            Text(hint, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -232,12 +311,116 @@ fun LicenseScreen(onBack: () -> Unit) {
                                 "另外：Android 版认的是「Android 档」的盘，Windows / Steam Deck 的 ISO 打不开，反之亦然。",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "可以同时装多份授权（不同平台档、不同批次的盘各一份）。打开某张盘时按盘上的" +
+                                "标签自动挑对应的那份，不用手动切换；列表里每份都能单独删除。\n" +
+                                "从别人那里拿到的 Windows / Steam Deck 档授权也能导入，但本机打不开，" +
+                                "会显示「打不开（E6）」，删掉就行。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "旧版单份 `license.bin` 不再读取：升级到这一版后，把之前那份重新导入一次即可" +
+                                "（文件名不限，见上面的目录）。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            licensesDir,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
             }
         }
-    }
 
+        // 删除要二次确认：删掉之后对应的盘就打不开了（当然可以找作者重发 / 重新导入）。
+        // 用 ConfirmOverlay 而不是 Compose 的 dialog：dialog 是独立窗口，会抢走手柄的
+        // KeyEvent，D-pad 到不了确认按钮。它必须画在 ArmsBackdrop 这层 BoxScope 里才盖得住整屏。
+        val toDelete = pendingDelete
+        if (toDelete != null) {
+            ConfirmOverlay(
+                title = "删除这份授权？",
+                message = "删除后对应的游戏盘会打不开（可重新导入）。\nlicid = ${toDelete.licid}",
+                onConfirm = {
+                    busy = true
+                    scope.launch {
+                        val err = withContext(Dispatchers.IO) { Dimg.deleteLicense(toDelete.licid) }
+                        busy = false
+                        message = if (err.isEmpty()) "已删除：${toDelete.licid}" else err
+                        pendingDelete = null
+                        reload()
+                    }
+                },
+                onDismiss = { if (!busy) pendingDelete = null },
+                confirmLabel = "删除",
+                dismissLabel = "取消",
+                destructive = true,
+                idPrefix = "license-delete",
+                confirmEnabled = !busy,
+            )
+        }
+    }
 }
+
+/**
+ * 一份授权一行：平台 + 收件人（前 8 位就够认人）、licid（排障/对单用）、能不能在本机解开。
+ * 路径（file）刻意不显示：又长又没用，真要排障去「关于」里看目录。
+ */
+@Composable
+private fun LicenseRow(
+    lic: Dimg.License,
+    busy: Boolean,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(17.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f)),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "${lic.platform} · 收件人 ${shortRecipient(lic.recipient)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "licid = ${lic.licid}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(enabled = !busy, onClick = onDelete) { Text("删除") }
+            }
+            Text(
+                if (lic.opens) "本机可用" else "打不开（E6）",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (lic.opens) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            )
+            if (!lic.opens && lic.error.isNotEmpty()) {
+                Text(
+                    lic.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+/** 收件人 32 hex 太长，列表里取前 8 位（后面加省略号）；短的（脏数据）就原样给。 */
+private fun shortRecipient(recipient: String): String =
+    if (recipient.length > 8) recipient.take(8) + "…" else recipient

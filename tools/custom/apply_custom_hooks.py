@@ -229,6 +229,72 @@ def _native_lib(text: str) -> str:
     return text + NATIVE_WRAPPERS
 
 
+# ---------------------------------------------------------------- 多 license store（P3）
+#
+# 这两个 hook 故意独立于上面的 native-lib / rpcsx-kt：
+#   * 已经打过旧补丁的分支（custom-dimg-android）marker 命中 → 旧 hook 跳过；
+#   * 新 hook 用新符号当 marker，锚点就是旧 hook 补出来的那几行 → 干净树 / 旧补丁树都能补上。
+NATIVE_LICENSES_STRUCT_ANCHOR = "  jstring (*dimgReset)(JNIEnv *env);\n"
+
+NATIVE_LICENSES_STRUCT_PAYLOAD = """  jobjectArray (*dimgLicenses)(JNIEnv *env);
+  jstring (*dimgDeleteLicense)(JNIEnv *env, jstring licid);
+"""
+
+NATIVE_LICENSES_DLSYM_ANCHOR = (
+    '    result.dimgReset = reinterpret_cast<decltype(dimgReset)>(dlsym(handle, "_rpcsx_dimgReset"));\n'
+)
+
+NATIVE_LICENSES_DLSYM_PAYLOAD = """    result.dimgLicenses = reinterpret_cast<decltype(dimgLicenses)>(dlsym(handle, "_rpcsx_dimgLicenses"));
+    result.dimgDeleteLicense = reinterpret_cast<decltype(dimgDeleteLicense)>(dlsym(handle, "_rpcsx_dimgDeleteLicense"));
+"""
+
+# 锚定 dimgReset 包装的完整函数体（它在上面的 NATIVE_WRAPPERS 里，只出现一次）
+NATIVE_LICENSES_WRAPPER_ANCHOR = """
+extern "C" JNIEXPORT jstring JNICALL
+Java_net_rpcsx_RPCSX_dimgReset(JNIEnv *env, jobject) {
+  if (rpcsxLib.dimgReset == nullptr) return wrap(env, "本版本不支持授权");
+  return rpcsxLib.dimgReset(env);
+}
+"""
+
+NATIVE_LICENSES_WRAPPERS = """
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_net_rpcsx_RPCSX_dimgLicenses(JNIEnv *env, jobject) {
+  if (rpcsxLib.dimgLicenses == nullptr) return nullptr;
+  return rpcsxLib.dimgLicenses(env);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_net_rpcsx_RPCSX_dimgDeleteLicense(JNIEnv *env, jobject, jstring licid) {
+  if (rpcsxLib.dimgDeleteLicense == nullptr || licid == nullptr) return wrap(env, "本版本不支持授权");
+  return rpcsxLib.dimgDeleteLicense(env, licid);
+}
+"""
+
+
+def _native_lib_licenses(text: str) -> str:
+    text = _insert_after(text, NATIVE_LICENSES_STRUCT_ANCHOR, NATIVE_LICENSES_STRUCT_PAYLOAD,
+                         "native-lib.cpp：RPCSXApi 加 dimgLicenses/dimgDeleteLicense 字段")
+    text = _insert_after(text, NATIVE_LICENSES_DLSYM_ANCHOR, NATIVE_LICENSES_DLSYM_PAYLOAD,
+                         "native-lib.cpp：dlsym 表加两个新入口")
+    return _insert_after(text, NATIVE_LICENSES_WRAPPER_ANCHOR, NATIVE_LICENSES_WRAPPERS,
+                         "native-lib.cpp：两个新 Java_ 包装")
+
+
+RPCSX_LICENSES_ANCHOR = "    external fun dimgReset(): String?\n"
+
+RPCSX_LICENSES_PAYLOAD = r"""
+    /**
+     * 已安装授权列表：每个元素一行，字段用 \t 分隔（Kotlin 侧 split('\t')）：
+     * licid / platform / recipient / hwid / opens(1/0) / tag_sha256 / file / error。
+     */
+    external fun dimgLicenses(): Array<String>?
+
+    /** 删除一份授权（licid = sha256(4096B tag)[:16]）；返回 "" = 成功，否则是错误说明。 */
+    external fun dimgDeleteLicense(licid: String): String?
+"""
+
+
 # ---------------------------------------------------------------- Kotlin 侧
 RPCSX_ANCHOR = """    external fun installSoundBridge(): Boolean
 """
@@ -512,9 +578,15 @@ HOOKS: list[Hook] = [
          lambda t: _insert_after(t, "    src/remote_play_upnp.cpp\n", ANDROID_CMAKE_PAYLOAD, "android/CMakeLists：加 dimg_jni.cpp"),
          "把 JNI 面编进 core"),
     Hook("native-lib", "android/armsx3-ui/app/src/main/cpp/native-lib.cpp", "_rpcsx_dimgProbe", _native_lib,
-         "glue 层透出 7 个 JNI 入口"),
+         "glue 层透出 9 个 JNI 入口"),
+    Hook("native-lib-licenses", "android/armsx3-ui/app/src/main/cpp/native-lib.cpp", "_rpcsx_dimgLicenses",
+         _native_lib_licenses,
+         "（P3）glue 层补上授权列表/删除两个入口（独立 hook：旧补丁树也能补）"),
     Hook("rpcsx-kt", KT + "net/rpcsx/RPCSX.kt", "external fun dimgRequest", lambda t: _insert_after(t, RPCSX_ANCHOR, RPCSX_PAYLOAD, "RPCSX.kt：external fun"),
          "Kotlin 侧声明 external fun"),
+    Hook("rpcsx-kt-licenses", KT + "net/rpcsx/RPCSX.kt", "external fun dimgLicenses",
+         lambda t: _insert_after(t, RPCSX_LICENSES_ANCHOR, RPCSX_LICENSES_PAYLOAD, "RPCSX.kt：授权列表/删除"),
+         "（P3）Kotlin 侧声明 dimgLicenses / dimgDeleteLicense（独立 hook）"),
     Hook("bridge-kt", KT + "com/armsx3/Rpcs3Bridge.kt", "installDimgBridge()", lambda t: _insert_after(t, BRIDGE_ANCHOR, BRIDGE_PAYLOAD, "Rpcs3Bridge.kt：装桥"),
          "启动时装 Keystore 桥"),
     Hook("route-kt", KT + "com/armsx2/navigation/AppRoute.kt", "data object License :", lambda t: _insert_after(t, ROUTE_ANCHOR, ROUTE_PAYLOAD, "AppRoute.kt：License 路由"),

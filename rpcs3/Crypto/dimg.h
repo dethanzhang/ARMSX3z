@@ -6,8 +6,9 @@
 //   tag (4096 B at image offset 0x1000): "PS3LCK03" | ver=3 | flags | platform(tag[9]) | ... | recipient(16) | salt(32)
 //   stream = AES-256-CTR(K_iso, iv), keystream forced to 0 inside [0x1000, 0x2000)
 //   request.bin: "P3RQ" | ver=4 | flags | res | RSA-2048 modulus(256) | hwid(8) | crc16 | ("P3RX" bundle)
-//   license.bin: "PS3LIC04" | ver=4 | flags | res | recipient(16) | hwid(8)
+//   license file: "PS3LIC04" | ver=4 | flags | res | recipient(16) | hwid(8)
 //                | RSA-OAEP(SHA-256) of K_iso(32)+iv(16) = 256 B | tag copy(4096) | ECDSA-P256 sig(64)
+//                导入后落在 store：<config>/dimg/licenses/<licid>.lic（licid = sha256(tag)[:16]）
 //
 // 平台档（tag[9]，参与 K_iso 派生，三档互不相通）：
 //   0 = Windows 定制 rpcs3.exe     设备密钥 = CNG 持久化键（TPM 优先）
@@ -57,10 +58,36 @@ namespace dimg
 	// 生成申请码（首次会创建设备密钥），并写 config/dimg/request.bin；返回 Base32 文本。失败返回空 + err。
 	std::string activation_code(std::string& err);
 
-	// 导入 license.bin 内容：验签 → 试开（确认是发给本机的）→ 才落盘。成功返回 true。
+	// 导入 license 内容：验签 → 试开（确认是发给本机的）→ 才落盘。成功返回 true。
+	// 落盘位置是 store：<config>/dimg/licenses/<licid>.lic（同一 licid 覆盖写，原子替换）。
 	bool import_license(const std::vector<u8>& blob, std::string& err);
 	bool import_license_text(const std::string& base32_text, std::string& err);
 	bool import_license_file(const std::string& path, std::string& err);
+
+	// ---------------------------------------------------------------- 多 license store
+	//
+	// 一次可以装多份授权（不同 tag 共存），文件名为 sha256(4096B tag)[:16]：
+	//   <config>/dimg/licenses/<licid>.lic
+	// 打开某张盘时按「盘上的 tag」选对应那份，而不是「第一个能验签的」。
+	struct license_entry
+	{
+		std::string licid;        // sha256(4096B 内容 tag)[:16]（内容算，不看文件名）
+		u8 platform_code = 0;
+		std::string platform;     // "Windows" / "Steam Deck" / "Android"
+		std::string recipient;    // hex 32
+		std::string hwid;         // hex 16
+		std::string tag_sha256;   // hex 64
+		std::string file;         // 完整路径
+		bool signature_ok = false;
+		bool opens_here = false;  // 本机私钥能解出 K_iso
+		std::string error;        // E2/E6/… 人类可读
+	};
+
+	// 列出 store 里所有授权（验签失败的也列出来，error 说明原因；按文件名排序）。
+	std::vector<license_entry> list_licenses();
+
+	// 删掉一份授权：licid 必须是 16 位小写 hex；按内容 licid 匹配（容忍手工改名/复制）。
+	bool delete_license(const std::string& licid, std::string& err);
 
 	// "ACTIVE" / "INACTIVE"，reason 给一句中文说明
 	std::string license_summary(std::string& reason);

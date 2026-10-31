@@ -166,3 +166,6 @@ android/**/cpp/libadrenotools/
 android/armsx3-ui/.kotlin/
 # claude
 CLAUDE.md
+
+# 另一会话遗留的临时备份目录（构建/同步都会重新生成，不入库）
+.bak/

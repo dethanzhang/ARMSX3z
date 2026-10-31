@@ -89,7 +89,7 @@ jobs:
           test -f android/armsx3-ui/app/src/main/cpp/libadrenotools/lib/linkernsbypass/CMakeLists.txt
           test -d 3rdparty/librashader/include
 
-      # 定制钩子（17 处对上游文件的小改动）：幂等
+      # 定制钩子（23 处对上游文件的小改动）：幂等
       #   * 从 master（纯上游镜像 + 新增文件）构建 → 这里把它们打上
       #   * 从定制分支构建 → 提交里已经有了，这一步全跳过
       # 上游重构了被钩的代码 → 这里直接报错并指出是哪条锚点，绝不静默出包
