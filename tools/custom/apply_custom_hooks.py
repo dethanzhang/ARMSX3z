@@ -441,13 +441,11 @@ ABOUT_PRUNE_TAIL = '''                }
 '''
 
 WORDMARK_SIG_OLD = "fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp) {"
-WORDMARK_SIG_NEW = "fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp, wordmark: String = \"ARMSX3定制\") {"
+WORDMARK_SIG_NEW = "fun ArmsLogo(modifier: Modifier = Modifier, showWordmark: Boolean = true, iconSize: Dp = 42.dp, wordmark: String = \"ARMSX3定制版\") {"
 
 DRAWER_LOGO_OLD = "            ArmsLogo(Modifier.weight(1f))"
 DRAWER_LOGO_NEW = "            ArmsLogo(Modifier.weight(1f), wordmark = \"ARMSX3\")"
 
-APP_NAME_OLD = '<string name="app_name">ARMSX3</string>'
-APP_NAME_NEW = '<string name="app_name">ARMSX3定制</string>'
 
 # savers（XScreenSaver 移植）里唯一一处大小写错的 include：
 #   savers/skyrocket/shockwave.cpp 写 <gl/gl.h>，仓库里实际是 savers/compat/GL/gl.h
@@ -546,10 +544,6 @@ HOOKS: list[Hook] = [
          "wordmark = \"ARMSX3\"",
          lambda t: _replace_once(t, DRAWER_LOGO_OLD, DRAWER_LOGO_NEW, "抽屉头部：保持短名"),
          "抽屉头部仍显示 ARMSX3（宽度只有屏宽 42%，长名会被省略号切掉）"),
-    Hook("app-name", "android/armsx3-ui/app/src/main/res/values/strings.xml",
-         "<string name=\"app_name\">ARMSX3定制</string>",
-         lambda t: _replace_once(t, APP_NAME_OLD, APP_NAME_NEW, "strings.xml：app_name"),
-         "桌面/最近任务里显示的应用名：ARMSX3定制"),
     Hook("drawer-kt", KT + "com/armsx2/navigation/NavigationDrawer.kt", "AppRoute.License)", _drawer,
          "抽屉入口 + 高亮判定"),
     Hook("apptab-kt", KT + "com/armsx2/ui/settings/AppTab.kt", "dimgActive", lambda t: _insert_after(
